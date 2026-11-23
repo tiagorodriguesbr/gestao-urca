@@ -12,6 +12,8 @@ import { RESTAURANT_INVENTORY_SEED } from '../data/restaurantInventorySeed';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   formatCurrencyBRL,
+  formatDateBR,
+  formatMonthKeyBR,
   GERENTE_EDITABLE_TABS,
   GERENTE_VIEWABLE_TABS,
   sanitizeText,
@@ -25,6 +27,7 @@ import {
   type GerenteViewableTab,
   type InventoryCategory,
   type InventoryItem,
+  type InventoryPeriod,
   type PaymentCategory,
   type PaymentMethod,
   type PaymentStatus,
@@ -592,10 +595,18 @@ export async function deleteUserProfileWithAudit(
   }
 }
 
-export async function saveInventoryMetaWithAudit(
+export async function createInventoryPeriodWithItemsAndAudit(
   actor: ActorContext,
-  input: { baseDate: string; currentDate: string }
-): Promise<void> {
+  input: {
+    monthKey: string;
+    baseDate: string;
+    currentDate: string;
+    carryFrom?: { period: InventoryPeriod; items: InventoryItem[] } | null;
+  }
+): Promise<string> {
+  if (!VALIDATION_LIMITS.MONTH_KEY_REGEX.test(input.monthKey)) {
+    throw new Error('Informe um mês válido no formato AAAA-MM.');
+  }
   if (input.baseDate && !VALIDATION_LIMITS.ISO_DATE_REGEX.test(input.baseDate)) {
     throw new Error('Data Base do inventário inválida.');
   }
@@ -603,16 +614,157 @@ export async function saveInventoryMetaWithAudit(
     throw new Error('Data Hoje do inventário inválida.');
   }
 
-  const metaRef = doc(db, 'inventory_meta', WORKSPACE_ID);
+  const periodId = `${WORKSPACE_ID}_${input.monthKey}`;
+  const periodRef = doc(db, 'inventory_periods', periodId);
+  const existingSnap = await getDoc(periodRef);
+  if (existingSnap.exists()) {
+    throw new Error(`O inventário de ${formatMonthKeyBR(input.monthKey)} já foi iniciado.`);
+  }
+
+  const carriedFromMonth = input.carryFrom?.period.monthKey || '';
+  const effectiveBaseDate = input.baseDate || input.carryFrom?.period.currentDate || '';
+
+  const seedRows =
+    input.carryFrom && input.carryFrom.items.length > 0
+      ? [...input.carryFrom.items]
+          .sort((a, b) => a.sortOrder - b.sortOrder)
+          .map((item, idx) => ({
+            name: item.name,
+            category: item.category,
+            unit: item.unit,
+            baseQty: Math.round(item.currentQty * 1000) / 1000,
+            currentQty: 0,
+            notes: '',
+            sortOrder: idx + 1,
+          }))
+      : RESTAURANT_INVENTORY_SEED.map((item, idx) => ({
+          name: item.name,
+          category: item.category,
+          unit: item.unit,
+          baseQty: 0,
+          currentQty: 0,
+          notes: '',
+          sortOrder: idx + 1,
+        }));
+
+  const chunkSize = 400;
+  const itemChunks: typeof seedRows[] = [];
+  for (let i = 0; i < seedRows.length; i += chunkSize) {
+    itemChunks.push(seedRows.slice(i, i + chunkSize));
+  }
+  if (itemChunks.length === 0) {
+    itemChunks.push([]);
+  }
+
+  for (let cIdx = 0; cIdx < itemChunks.length; cIdx++) {
+    const chunk = itemChunks[cIdx];
+    const batch = writeBatch(db);
+
+    if (cIdx === 0) {
+      batch.set(periodRef, {
+        workspaceId: WORKSPACE_ID,
+        monthKey: input.monthKey,
+        baseDate: effectiveBaseDate,
+        currentDate: input.currentDate || '',
+        baseValidated: false,
+        currentValidated: false,
+        status: 'rascunho',
+        submittedByUid: '',
+        submittedByName: '',
+        submittedAtIso: '',
+        reviewedByUid: '',
+        reviewedByName: '',
+        reviewedAtIso: '',
+        rejectionReason: '',
+        carriedFromMonth,
+        createdByUid: actor.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      const auditRef = doc(collection(db, 'audit_logs'));
+      batch.set(
+        auditRef,
+        buildAuditDoc({
+          entityType: 'inventory',
+          entityId: periodId,
+          action: 'create',
+          summary: carriedFromMonth
+            ? `Iniciado inventário ${formatMonthKeyBR(input.monthKey)} com ${seedRows.length} itens puxando Qtd. Base de ${formatMonthKeyBR(carriedFromMonth)}`
+            : `Iniciado inventário ${formatMonthKeyBR(input.monthKey)} com base completa (${seedRows.length} itens)`,
+          actor,
+          changedFields: ['monthKey', 'baseDate', 'carriedFromMonth'],
+        })
+      );
+    }
+
+    for (const row of chunk) {
+      const itemRef = doc(collection(db, 'inventory_items'));
+      batch.set(itemRef, {
+        workspaceId: WORKSPACE_ID,
+        periodId,
+        monthKey: input.monthKey,
+        name: sanitizeText(row.name, VALIDATION_LIMITS.INVENTORY_NAME_MAX),
+        category: row.category,
+        unit: sanitizeText(row.unit, VALIDATION_LIMITS.INVENTORY_UNIT_MAX),
+        baseQty: row.baseQty,
+        currentQty: row.currentQty,
+        notes: sanitizeText(row.notes, VALIDATION_LIMITS.INVENTORY_NOTES_MAX),
+        sortOrder: row.sortOrder,
+        createdByUid: actor.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `inventory_periods/${periodId}`);
+    }
+  }
+
+  return periodId;
+}
+
+export async function updateInventoryPeriodDatesAndValidationWithAudit(
+  actor: ActorContext,
+  period: InventoryPeriod,
+  input: {
+    baseDate: string;
+    currentDate: string;
+    baseValidated: boolean;
+    currentValidated: boolean;
+  }
+): Promise<void> {
+  if (period.status === 'aprovado') {
+    throw new Error('Este inventário já foi aprovado e bloqueado. Não é possível alterá-lo.');
+  }
+  if (period.status === 'aguardando_validacao') {
+    throw new Error('Este inventário aguarda validação de Sócio ou Diretor.');
+  }
+  if (input.baseDate && !VALIDATION_LIMITS.ISO_DATE_REGEX.test(input.baseDate)) {
+    throw new Error('Data da Quantidade Base inválida.');
+  }
+  if (input.currentDate && !VALIDATION_LIMITS.ISO_DATE_REGEX.test(input.currentDate)) {
+    throw new Error('Data da Quantidade Hoje inválida.');
+  }
+  if (input.baseValidated && !input.baseDate) {
+    throw new Error('Informe a Data da Quantidade Base antes de validá-la.');
+  }
+  if (input.currentValidated && !input.currentDate) {
+    throw new Error('Informe a Data da Quantidade Hoje antes de validá-la.');
+  }
+
+  const periodRef = doc(db, 'inventory_periods', period.id);
   const auditRef = doc(collection(db, 'audit_logs'));
   const batch = writeBatch(db);
 
-  batch.set(metaRef, {
-    workspaceId: WORKSPACE_ID,
+  batch.update(periodRef, {
     baseDate: input.baseDate,
     currentDate: input.currentDate,
-    updatedByUid: actor.uid,
-    updatedByName: sanitizeText(actor.displayName, VALIDATION_LIMITS.DISPLAY_NAME_MAX),
+    baseValidated: input.baseValidated,
+    currentValidated: input.currentValidated,
     updatedAt: serverTimestamp(),
   });
 
@@ -620,62 +772,201 @@ export async function saveInventoryMetaWithAudit(
     auditRef,
     buildAuditDoc({
       entityType: 'inventory',
-      entityId: WORKSPACE_ID,
+      entityId: period.id,
       action: 'update',
-      summary: `Atualizadas datas do inventário (Base: ${input.baseDate || '—'} · Hoje: ${input.currentDate || '—'})`,
+      summary: `Datas/validação ${formatMonthKeyBR(period.monthKey)}: Base ${input.baseDate ? formatDateBR(input.baseDate) : '—'} (${input.baseValidated ? 'validada' : 'pendente'}) · Hoje ${input.currentDate ? formatDateBR(input.currentDate) : '—'} (${input.currentValidated ? 'validada' : 'pendente'})`,
       actor,
-      changedFields: ['baseDate', 'currentDate'],
+      changedFields: ['baseDate', 'currentDate', 'baseValidated', 'currentValidated'],
     })
   );
 
   try {
     await batch.commit();
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `inventory_meta/${WORKSPACE_ID}`);
+    handleFirestoreError(error, OperationType.UPDATE, `inventory_periods/${period.id}`);
   }
 }
 
-export async function seedRestaurantInventoryWithAudit(actor: ActorContext): Promise<void> {
+export async function syncInventoryBaseFromPreviousMonthWithAudit(
+  actor: ActorContext,
+  targetPeriod: InventoryPeriod,
+  targetItems: InventoryItem[],
+  prevPeriod: InventoryPeriod,
+  prevItems: InventoryItem[]
+): Promise<number> {
+  if (targetPeriod.status === 'aprovado' || targetPeriod.status === 'aguardando_validacao') {
+    throw new Error('Este inventário não está aberto para edição.');
+  }
+
+  const prevMap = new Map<string, InventoryItem>();
+  for (const item of prevItems) {
+    prevMap.set(`${item.category}::${item.name.trim().toLowerCase()}`, item);
+  }
+
+  const updates: Array<{ target: InventoryItem; newBaseQty: number }> = [];
+  for (const tItem of targetItems) {
+    const match = prevMap.get(`${tItem.category}::${tItem.name.trim().toLowerCase()}`);
+    if (!match) continue;
+    const rounded = Math.round(match.currentQty * 1000) / 1000;
+    if (rounded !== tItem.baseQty) {
+      updates.push({ target: tItem, newBaseQty: rounded });
+    }
+  }
+
+  const chunkSize = 400;
+  const chunks: typeof updates[] = [];
+  for (let i = 0; i < updates.length; i += chunkSize) {
+    chunks.push(updates.slice(i, i + chunkSize));
+  }
+  if (chunks.length === 0) chunks.push([]);
+
+  for (let cIdx = 0; cIdx < chunks.length; cIdx++) {
+    const chunk = chunks[cIdx];
+    const batch = writeBatch(db);
+
+    if (cIdx === 0) {
+      const periodRef = doc(db, 'inventory_periods', targetPeriod.id);
+      batch.update(periodRef, {
+        baseDate: prevPeriod.currentDate || targetPeriod.baseDate,
+        baseValidated: false,
+        carriedFromMonth: prevPeriod.monthKey,
+        updatedAt: serverTimestamp(),
+      });
+
+      const auditRef = doc(collection(db, 'audit_logs'));
+      batch.set(
+        auditRef,
+        buildAuditDoc({
+          entityType: 'inventory',
+          entityId: targetPeriod.id,
+          action: 'update',
+          summary: `Puxada Qtd. Base de ${formatMonthKeyBR(targetPeriod.monthKey)} a partir da Qtd. Hoje de ${formatMonthKeyBR(prevPeriod.monthKey)} (${updates.length} itens atualizados)`,
+          actor,
+          changedFields: ['baseDate', 'baseValidated', 'carriedFromMonth', 'baseQty'],
+        })
+      );
+    }
+
+    for (const row of chunk) {
+      batch.update(doc(db, 'inventory_items', row.target.id), {
+        baseQty: row.newBaseQty,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `inventory_periods/${targetPeriod.id}`);
+    }
+  }
+
+  return updates.length;
+}
+
+export async function submitInventoryForValidationWithAudit(
+  actor: ActorContext,
+  period: InventoryPeriod
+): Promise<void> {
+  if (period.status !== 'rascunho' && period.status !== 'recusado') {
+    throw new Error('Somente inventários em preenchimento ou recusados podem ser enviados para validação.');
+  }
+  if (!VALIDATION_LIMITS.ISO_DATE_REGEX.test(period.baseDate) || !period.baseValidated) {
+    throw new Error('Valide a Data e a Quantidade Base antes de enviar para validação.');
+  }
+  if (!VALIDATION_LIMITS.ISO_DATE_REGEX.test(period.currentDate) || !period.currentValidated) {
+    throw new Error('Valide a Data e a Quantidade Hoje antes de enviar para validação.');
+  }
+
+  const periodRef = doc(db, 'inventory_periods', period.id);
+  const auditRef = doc(collection(db, 'audit_logs'));
   const batch = writeBatch(db);
-  RESTAURANT_INVENTORY_SEED.forEach((item, index) => {
-    const itemRef = doc(collection(db, 'inventory_items'));
-    batch.set(itemRef, {
-      workspaceId: WORKSPACE_ID,
-      name: sanitizeText(item.name, VALIDATION_LIMITS.INVENTORY_NAME_MAX),
-      category: item.category,
-      unit: sanitizeText(item.unit, VALIDATION_LIMITS.INVENTORY_UNIT_MAX),
-      baseQty: 0,
-      currentQty: 0,
-      notes: '',
-      sortOrder: index + 1,
-      createdByUid: actor.uid,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+
+  batch.update(periodRef, {
+    status: 'aguardando_validacao',
+    submittedByUid: actor.uid,
+    submittedByName: sanitizeText(actor.displayName, VALIDATION_LIMITS.DISPLAY_NAME_MAX),
+    submittedAtIso: new Date().toISOString(),
+    updatedAt: serverTimestamp(),
   });
 
-  const auditRef = doc(collection(db, 'audit_logs'));
   batch.set(
     auditRef,
     buildAuditDoc({
       entityType: 'inventory',
-      entityId: WORKSPACE_ID,
-      action: 'create',
-      summary: `Carregada base de ingredientes do restaurante (${RESTAURANT_INVENTORY_SEED.length} itens em 10 categorias)`,
+      entityId: period.id,
+      action: 'update',
+      summary: `Inventário de ${formatMonthKeyBR(period.monthKey)} enviado para validação de Sócios e Diretores`,
       actor,
-      changedFields: ['restaurant_inventory_seed'],
+      changedFields: ['status', 'submittedByUid', 'submittedByName', 'submittedAtIso'],
     })
   );
 
   try {
     await batch.commit();
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, 'inventory_items');
+    handleFirestoreError(error, OperationType.UPDATE, `inventory_periods/${period.id}`);
+  }
+}
+
+export async function reviewInventoryPeriodWithAudit(
+  actor: ActorContext,
+  period: InventoryPeriod,
+  input: {
+    decision: 'aprovado' | 'recusado';
+    rejectionReason: string;
+  }
+): Promise<void> {
+  if (period.status !== 'aguardando_validacao') {
+    throw new Error('Este inventário não está aguardando validação.');
+  }
+
+  const cleanReason =
+    input.decision === 'recusado'
+      ? sanitizeText(
+          input.rejectionReason.trim() || 'Ajustes solicitados na revisão.',
+          VALIDATION_LIMITS.INVENTORY_REJECTION_MAX
+        )
+      : '';
+
+  const periodRef = doc(db, 'inventory_periods', period.id);
+  const auditRef = doc(collection(db, 'audit_logs'));
+  const batch = writeBatch(db);
+
+  batch.update(periodRef, {
+    status: input.decision,
+    reviewedByUid: actor.uid,
+    reviewedByName: sanitizeText(actor.displayName, VALIDATION_LIMITS.DISPLAY_NAME_MAX),
+    reviewedAtIso: new Date().toISOString(),
+    rejectionReason: cleanReason,
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.set(
+    auditRef,
+    buildAuditDoc({
+      entityType: 'inventory',
+      entityId: period.id,
+      action: 'update',
+      summary:
+        input.decision === 'aprovado'
+          ? `Inventário de ${formatMonthKeyBR(period.monthKey)} APROVADO e bloqueado definitivamente`
+          : `Inventário de ${formatMonthKeyBR(period.monthKey)} RECUSADO para ajustes (${cleanReason})`,
+      actor,
+      changedFields: ['status', 'reviewedByUid', 'reviewedByName', 'reviewedAtIso', 'rejectionReason'],
+    })
+  );
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `inventory_periods/${period.id}`);
   }
 }
 
 export async function saveInventoryBatchCountsWithAudit(
   actor: ActorContext,
+  period: InventoryPeriod,
   updates: Array<{
     existing: InventoryItem;
     baseQty: number;
@@ -684,6 +975,9 @@ export async function saveInventoryBatchCountsWithAudit(
     notes: string;
   }>
 ): Promise<void> {
+  if (period.status !== 'rascunho' && period.status !== 'recusado') {
+    throw new Error('Este inventário está bloqueado para alteração.');
+  }
   if (updates.length === 0) return;
 
   const chunks: typeof updates[] = [];
@@ -719,9 +1013,9 @@ export async function saveInventoryBatchCountsWithAudit(
       auditRef,
       buildAuditDoc({
         entityType: 'inventory',
-        entityId: WORKSPACE_ID,
+        entityId: period.id,
         action: 'update',
-        summary: `Atualizada contagem de ${chunk.length} item(ns) no inventário`,
+        summary: `Atualizada contagem de ${chunk.length} item(ns) no inventário (${formatMonthKeyBR(period.monthKey)})`,
         actor,
         changedFields: ['baseQty', 'currentQty', 'unit', 'notes'],
       })
@@ -737,6 +1031,7 @@ export async function saveInventoryBatchCountsWithAudit(
 
 export async function createInventoryItemWithAudit(
   actor: ActorContext,
+  period: InventoryPeriod,
   input: {
     name: string;
     category: InventoryCategory;
@@ -747,6 +1042,9 @@ export async function createInventoryItemWithAudit(
     sortOrder: number;
   }
 ): Promise<string> {
+  if (period.status !== 'rascunho' && period.status !== 'recusado') {
+    throw new Error('Este inventário está bloqueado para alteração.');
+  }
   const err = validateInventoryItemPayload(input);
   if (err) throw new Error(err);
 
@@ -757,6 +1055,8 @@ export async function createInventoryItemWithAudit(
   const name = sanitizeText(input.name, VALIDATION_LIMITS.INVENTORY_NAME_MAX);
   batch.set(ref, {
     workspaceId: WORKSPACE_ID,
+    periodId: period.id,
+    monthKey: period.monthKey,
     name,
     category: input.category,
     unit: sanitizeText(input.unit, VALIDATION_LIMITS.INVENTORY_UNIT_MAX),
@@ -775,9 +1075,9 @@ export async function createInventoryItemWithAudit(
       entityType: 'inventory',
       entityId: ref.id,
       action: 'create',
-      summary: `Incluído item "${name}" (${input.category}) no inventário`,
+      summary: `Incluído item "${name}" (${input.category}) no inventário ${formatMonthKeyBR(period.monthKey)}`,
       actor,
-      changedFields: ['name', 'category', 'unit', 'baseQty', 'currentQty'],
+      changedFields: ['periodId', 'monthKey', 'name', 'category', 'unit', 'baseQty', 'currentQty'],
     })
   );
 
@@ -791,8 +1091,12 @@ export async function createInventoryItemWithAudit(
 
 export async function deleteInventoryItemWithAudit(
   actor: ActorContext,
+  period: InventoryPeriod,
   item: InventoryItem
 ): Promise<void> {
+  if (period.status !== 'rascunho' && period.status !== 'recusado') {
+    throw new Error('Este inventário está bloqueado para alteração.');
+  }
   const ref = doc(db, 'inventory_items', item.id);
   const auditRef = doc(collection(db, 'audit_logs'));
   const batch = writeBatch(db);
@@ -804,7 +1108,7 @@ export async function deleteInventoryItemWithAudit(
       entityType: 'inventory',
       entityId: item.id,
       action: 'delete',
-      summary: `Removido item "${item.name}" (${item.category}) do inventário`,
+      summary: `Removido item "${item.name}" (${item.category}) do inventário ${formatMonthKeyBR(period.monthKey)}`,
       actor,
       changedFields: ['deleted'],
     })

@@ -38,6 +38,7 @@ import {
 import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
 import {
   createInventoryItemWithAudit,
+  createInventoryPeriodWithItemsAndAudit,
   createPaymentWithAudit,
   createTaskWithAudit,
   createUserProfileWithAudit,
@@ -47,9 +48,11 @@ import {
   deleteUserProfileWithAudit,
   ensureBootstrappedAdminProfile,
   importStarterChecklistPack,
+  reviewInventoryPeriodWithAudit,
   saveInventoryBatchCountsWithAudit,
-  saveInventoryMetaWithAudit,
-  seedRestaurantInventoryWithAudit,
+  submitInventoryForValidationWithAudit,
+  syncInventoryBaseFromPreviousMonthWithAudit,
+  updateInventoryPeriodDatesAndValidationWithAudit,
   updatePaymentWithAudit,
   updateTaskWithAudit,
   updateUserProfileWithAudit,
@@ -63,6 +66,7 @@ import {
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   formatCurrencyBRL,
+  formatMonthKeyBR,
   GERENTE_VIEWABLE_TABS,
   isFullAdminRole,
   normalizeUserRole,
@@ -72,7 +76,7 @@ import {
   type GerenteEditableTab,
   type GerenteViewableTab,
   type InventoryItem,
-  type InventoryMeta,
+  type InventoryPeriod,
   type PartnerRecord,
   type RealtimeAlert,
   type TransitionPayment,
@@ -165,7 +169,7 @@ function MainShell() {
   const [payments, setPayments] = useState<TransitionPayment[]>([]);
   const [paymentsLoading, setPaymentsLoading] = useState(true);
   const [partners, setPartners] = useState<PartnerRecord[]>([]);
-  const [inventoryMeta, setInventoryMeta] = useState<InventoryMeta | null>(null);
+  const [inventoryPeriods, setInventoryPeriods] = useState<InventoryPeriod[]>([]);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [inventoryLoading, setInventoryLoading] = useState(true);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -186,6 +190,7 @@ function MainShell() {
 
   const tasksInitializedRef = useRef(false);
   const paymentsInitializedRef = useRef(false);
+  const inventoryPeriodsInitializedRef = useRef(false);
   const urgentPushSentRef = useRef(false);
 
   const pushAlert = useCallback(
@@ -221,6 +226,7 @@ function MainShell() {
         setAuthReady(true);
         tasksInitializedRef.current = false;
         paymentsInitializedRef.current = false;
+        inventoryPeriodsInitializedRef.current = false;
         urgentPushSentRef.current = false;
         return;
       }
@@ -346,7 +352,7 @@ function MainShell() {
       setTasks([]);
       setPayments([]);
       setPartners([]);
-      setInventoryMeta(null);
+      setInventoryPeriods([]);
       setInventoryItems([]);
       setAuditLogs([]);
       setTeamUsers([]);
@@ -466,19 +472,56 @@ function MainShell() {
       (error) => handleFirestoreError(error, OperationType.LIST, 'partners')
     );
 
-    const unsubInventoryMeta = onSnapshot(
-      doc(db, 'inventory_meta', WORKSPACE_ID),
-      (snap) => {
-        if (snap.exists()) {
-          setInventoryMeta({
-            id: snap.id,
-            ...(snap.data() as Omit<InventoryMeta, 'id'>),
+    const inventoryPeriodsQuery = query(
+      collection(db, 'inventory_periods'),
+      where('workspaceId', '==', WORKSPACE_ID)
+    );
+    const unsubInventoryPeriods = onSnapshot(
+      inventoryPeriodsQuery,
+      { includeMetadataChanges: true },
+      (snapshot) => {
+        const list: InventoryPeriod[] = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<InventoryPeriod, 'id'>),
+          hasPendingWrites: d.metadata.hasPendingWrites,
+        }));
+        setInventoryPeriods(list);
+
+        if (!inventoryPeriodsInitializedRef.current) {
+          inventoryPeriodsInitializedRef.current = true;
+          if (isFullAdmin) {
+            const awaiting = list.filter((p) => p.status === 'aguardando_validacao');
+            if (awaiting.length > 0) {
+              pushAlert(
+                {
+                  kind: 'inventory',
+                  title: `${awaiting.length} inventário(s) aguardando validação`,
+                  message: `Mês ${formatMonthKeyBR(awaiting[0].monthKey)} enviado por ${awaiting[0].submittedByName || 'equipe'} aguarda aprovação de Sócio/Diretor.`,
+                },
+                true
+              );
+            }
+          }
+        } else if (isFullAdmin) {
+          snapshot.docChanges().forEach((change) => {
+            const data = change.doc.data() as InventoryPeriod;
+            if (
+              (change.type === 'added' || change.type === 'modified') &&
+              data.status === 'aguardando_validacao'
+            ) {
+              pushAlert(
+                {
+                  kind: 'inventory',
+                  title: `Validação de Inventário (${formatMonthKeyBR(data.monthKey)})`,
+                  message: `${data.submittedByName || 'Equipe'} enviou o inventário para aprovação de Sócios e Diretores.`,
+                },
+                true
+              );
+            }
           });
-        } else {
-          setInventoryMeta(null);
         }
       },
-      (error) => handleFirestoreError(error, OperationType.GET, `inventory_meta/${WORKSPACE_ID}`)
+      (error) => handleFirestoreError(error, OperationType.LIST, 'inventory_periods')
     );
 
     setInventoryLoading(true);
@@ -560,7 +603,7 @@ function MainShell() {
       unsubTasks();
       unsubPayments();
       unsubPartners();
-      unsubInventoryMeta();
+      unsubInventoryPeriods();
       unsubInventoryItems();
       if (unsubAudit) unsubAudit();
       if (unsubUsers) unsubUsers();
@@ -570,6 +613,14 @@ function MainShell() {
   const urgentTasksCount = useMemo(
     () => tasks.filter((t) => isUrgentTask(t)).length,
     [tasks]
+  );
+
+  const pendingInventoryValidationsCount = useMemo(
+    () =>
+      isFullAdmin
+        ? inventoryPeriods.filter((p) => p.status === 'aguardando_validacao').length
+        : 0,
+    [isFullAdmin, inventoryPeriods]
   );
 
   const unreadAlertsCount = useMemo(
@@ -829,6 +880,11 @@ function MainShell() {
                       {urgentTasksCount}
                     </span>
                   )}
+                  {item.id === 'inventory' && pendingInventoryValidationsCount > 0 && (
+                    <span className="font-mono tabular-nums text-xs text-amber-700 dark:text-amber-400 font-semibold">
+                      {pendingInventoryValidationsCount}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -916,9 +972,12 @@ function MainShell() {
               className="relative p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
             >
               <Bell className="w-4 h-4" />
-              {(unreadAlertsCount > 0 || urgentTasksCount > 0) && (
+              {(unreadAlertsCount > 0 ||
+                urgentTasksCount > 0 ||
+                pendingInventoryValidationsCount > 0) && (
                 <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-amber-600 text-white font-mono text-[10px] font-bold flex items-center justify-center">
-                  {unreadAlertsCount || urgentTasksCount}
+                  {unreadAlertsCount ||
+                    urgentTasksCount + pendingInventoryValidationsCount}
                 </span>
               )}
             </button>
@@ -1080,24 +1139,40 @@ function MainShell() {
 
           {activeTab === 'inventory' && canViewTab('inventory') && (
             <InventoryView
+              periods={inventoryPeriods}
               items={inventoryItems}
-              meta={inventoryMeta}
               loading={inventoryLoading}
               canEdit={canEditTab('inventory')}
-              onSaveMeta={async (input) => {
-                await saveInventoryMetaWithAudit(actor, input);
+              isFullAdmin={isFullAdmin}
+              onCreatePeriod={async (input) =>
+                createInventoryPeriodWithItemsAndAudit(actor, input)
+              }
+              onUpdateDatesAndValidation={async (period, input) => {
+                await updateInventoryPeriodDatesAndValidationWithAudit(actor, period, input);
               }}
-              onSeedCatalog={async () => {
-                await seedRestaurantInventoryWithAudit(actor);
+              onSyncBaseFromPrev={async (targetPeriod, targetItems, prevPeriod, prevItems) =>
+                syncInventoryBaseFromPreviousMonthWithAudit(
+                  actor,
+                  targetPeriod,
+                  targetItems,
+                  prevPeriod,
+                  prevItems
+                )
+              }
+              onSubmitForValidation={async (period) => {
+                await submitInventoryForValidationWithAudit(actor, period);
               }}
-              onSaveBatchCounts={async (updates) => {
-                await saveInventoryBatchCountsWithAudit(actor, updates);
+              onReviewPeriod={async (period, input) => {
+                await reviewInventoryPeriodWithAudit(actor, period, input);
               }}
-              onCreateItem={async (input) => {
-                await createInventoryItemWithAudit(actor, input);
+              onSaveBatchCounts={async (period, updates) => {
+                await saveInventoryBatchCountsWithAudit(actor, period, updates);
               }}
-              onDeleteItem={async (item) => {
-                await deleteInventoryItemWithAudit(actor, item);
+              onCreateItem={async (period, input) => {
+                await createInventoryItemWithAudit(actor, period, input);
+              }}
+              onDeleteItem={async (period, item) => {
+                await deleteInventoryItemWithAudit(actor, period, item);
               }}
               requestConfirmation={requestConfirmation}
             />

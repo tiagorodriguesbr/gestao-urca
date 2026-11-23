@@ -201,31 +201,58 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    function isValidInventoryMeta(data) {
+    function isValidInventoryPeriod(data) {
       return data.keys().hasAll([
-          'workspaceId', 'baseDate', 'currentDate', 'updatedByUid', 'updatedByName', 'updatedAt'
+          'workspaceId', 'monthKey', 'baseDate', 'currentDate',
+          'baseValidated', 'currentValidated', 'status',
+          'submittedByUid', 'submittedByName', 'submittedAtIso',
+          'reviewedByUid', 'reviewedByName', 'reviewedAtIso',
+          'rejectionReason', 'carriedFromMonth',
+          'createdByUid', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'workspaceId', 'baseDate', 'currentDate', 'updatedByUid', 'updatedByName', 'updatedAt'
+          'workspaceId', 'monthKey', 'baseDate', 'currentDate',
+          'baseValidated', 'currentValidated', 'status',
+          'submittedByUid', 'submittedByName', 'submittedAtIso',
+          'reviewedByUid', 'reviewedByName', 'reviewedAtIso',
+          'rejectionReason', 'carriedFromMonth',
+          'createdByUid', 'createdAt', 'updatedAt'
         ])
         && data.workspaceId == 'creps-urca'
+        && data.monthKey is string && data.monthKey.size() == 7 && data.monthKey.matches('^\\d{4}-\\d{2}$')
         && isValidOptionalIsoDate(data.baseDate)
         && isValidOptionalIsoDate(data.currentDate)
-        && isValidId(data.updatedByUid)
-        && data.updatedByName is string && data.updatedByName.size() >= 2 && data.updatedByName.size() <= 80
+        && data.baseValidated is bool
+        && data.currentValidated is bool
+        && data.status in ['rascunho', 'aguardando_validacao', 'aprovado', 'recusado']
+        && data.submittedByUid is string && data.submittedByUid.size() <= 128
+        && data.submittedByName is string && data.submittedByName.size() <= 80
+        && data.submittedAtIso is string && data.submittedAtIso.size() <= 40
+        && data.reviewedByUid is string && data.reviewedByUid.size() <= 128
+        && data.reviewedByName is string && data.reviewedByName.size() <= 80
+        && data.reviewedAtIso is string && data.reviewedAtIso.size() <= 40
+        && data.rejectionReason is string && data.rejectionReason.size() <= 300
+        && data.carriedFromMonth is string && (data.carriedFromMonth == '' || (data.carriedFromMonth.size() == 7 && data.carriedFromMonth.matches('^\\d{4}-\\d{2}$')))
+        && isValidId(data.createdByUid)
+        && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
 
     function isValidInventoryItem(data) {
       return data.keys().hasAll([
-          'workspaceId', 'name', 'category', 'unit', 'baseQty', 'currentQty',
-          'notes', 'sortOrder', 'createdByUid', 'createdAt', 'updatedAt'
+          'workspaceId', 'periodId', 'monthKey', 'name', 'category', 'unit',
+          'baseQty', 'currentQty', 'notes', 'sortOrder',
+          'createdByUid', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'workspaceId', 'name', 'category', 'unit', 'baseQty', 'currentQty',
-          'notes', 'sortOrder', 'createdByUid', 'createdAt', 'updatedAt'
+          'workspaceId', 'periodId', 'monthKey', 'name', 'category', 'unit',
+          'baseQty', 'currentQty', 'notes', 'sortOrder',
+          'createdByUid', 'createdAt', 'updatedAt'
         ])
         && data.workspaceId == 'creps-urca'
+        && isValidId(data.periodId)
+        && data.monthKey is string && data.monthKey.size() == 7 && data.monthKey.matches('^\\d{4}-\\d{2}$')
+        && data.periodId == ('creps-urca_' + data.monthKey)
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
         && data.category in [
           'Proteínas',
@@ -247,6 +274,12 @@ service cloud.firestore {
         && isValidId(data.createdByUid)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
+    }
+
+    function inventoryPeriodEditable(periodId) {
+      return existsAfter(/databases/$(database)/documents/inventory_periods/$(periodId))
+        && getAfter(/databases/$(database)/documents/inventory_periods/$(periodId)).data.workspaceId == 'creps-urca'
+        && getAfter(/databases/$(database)/documents/inventory_periods/$(periodId)).data.status in ['rascunho', 'recusado'];
     }
 
     function isValidAuditLog(data) {
@@ -410,31 +443,59 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // Collection: /inventory_meta/{metaId}
+    // Collection: /inventory_periods/{periodId}
     // =========================================================================
-    match /inventory_meta/{metaId} {
-      allow get: if isSignedIn() && isValidId(metaId) && isTeamMember();
+    match /inventory_periods/{periodId} {
+      allow get: if isSignedIn() && isValidId(periodId) && isTeamMember();
       allow list: if isSignedIn() && resource.data.workspaceId == 'creps-urca' && isTeamMember();
 
       allow create: if isSignedIn()
-        && metaId == 'creps-urca'
-        && isValidInventoryMeta(incoming())
-        && incoming().updatedByUid == request.auth.uid
+        && isValidId(periodId)
+        && periodId == ('creps-urca_' + incoming().monthKey)
+        && isValidInventoryPeriod(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
+        && incoming().status == 'rascunho'
         && (isFullAdmin() || isGerenteWithEdit('inventory'));
 
       allow update: if isSignedIn()
-        && metaId == 'creps-urca'
-        && isValidInventoryMeta(incoming())
+        && isValidId(periodId)
+        && isValidInventoryPeriod(incoming())
         && incoming().workspaceId == existing().workspaceId
-        && incoming().updatedByUid == request.auth.uid
+        && incoming().monthKey == existing().monthKey
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly([
-          'baseDate', 'currentDate', 'updatedByUid', 'updatedByName', 'updatedAt'
-        ])
-        && (isFullAdmin() || isGerenteWithEdit('inventory'));
+        && existing().status != 'aprovado'
+        && (
+          (
+            existing().status in ['rascunho', 'recusado']
+            && incoming().status in ['rascunho', 'aguardando_validacao']
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'baseDate', 'currentDate', 'baseValidated', 'currentValidated',
+              'status', 'submittedByUid', 'submittedByName', 'submittedAtIso',
+              'carriedFromMonth', 'updatedAt'
+            ])
+            && (isFullAdmin() || isGerenteWithEdit('inventory'))
+          )
+          ||
+          (
+            existing().status == 'aguardando_validacao'
+            && incoming().status in ['aprovado', 'recusado']
+            && incoming().reviewedByUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'reviewedByUid', 'reviewedByName', 'reviewedAtIso',
+              'rejectionReason', 'updatedAt'
+            ])
+            && isFullAdmin()
+          )
+        );
 
-      allow delete: if false;
+      allow delete: if isSignedIn()
+        && isValidId(periodId)
+        && isFullAdmin()
+        && existing().status != 'aprovado';
     }
 
     // =========================================================================
@@ -450,22 +511,27 @@ service cloud.firestore {
         && incoming().createdByUid == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
+        && inventoryPeriodEditable(incoming().periodId)
         && (isFullAdmin() || isGerenteWithEdit('inventory'));
 
       allow update: if isSignedIn()
         && isValidId(itemId)
         && isValidInventoryItem(incoming())
         && incoming().workspaceId == existing().workspaceId
+        && incoming().periodId == existing().periodId
+        && incoming().monthKey == existing().monthKey
         && incoming().createdByUid == existing().createdByUid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'name', 'category', 'unit', 'baseQty', 'currentQty', 'notes', 'sortOrder', 'updatedAt'
         ])
+        && inventoryPeriodEditable(existing().periodId)
         && (isFullAdmin() || isGerenteWithEdit('inventory'));
 
       allow delete: if isSignedIn()
         && isValidId(itemId)
+        && inventoryPeriodEditable(existing().periodId)
         && (isFullAdmin() || isGerenteWithEdit('inventory'));
     }
 

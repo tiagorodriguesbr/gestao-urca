@@ -304,35 +304,83 @@
         "updatedAt"
       ]
     },
-    "InventoryMeta": {
-      "title": "InventoryMeta",
-      "description": "Datas manuais de referência para Quantidade Base e Quantidade Hoje do inventário.",
+    "InventoryPeriod": {
+      "title": "InventoryPeriod",
+      "description": "Fechamento mensal do inventário com datas validadas de Base/Hoje e fluxo de aprovação por Sócios e Diretores.",
       "type": "object",
       "properties": {
         "workspaceId": {
           "type": "string",
           "enum": ["creps-urca"]
         },
+        "monthKey": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 7,
+          "pattern": "^\\d{4}-\\d{2}$",
+          "description": "Mês de referência (YYYY-MM)."
+        },
         "baseDate": {
           "type": "string",
           "maxLength": 10,
-          "description": "Data manual da contagem base (YYYY-MM-DD ou vazio)."
+          "description": "Data validada da Quantidade Base (YYYY-MM-DD ou vazio)."
         },
         "currentDate": {
           "type": "string",
           "maxLength": 10,
-          "description": "Data manual da contagem hoje (YYYY-MM-DD ou vazio)."
+          "description": "Data validada da Quantidade Hoje (YYYY-MM-DD ou vazio)."
         },
-        "updatedByUid": {
+        "baseValidated": {
+          "type": "boolean"
+        },
+        "currentValidated": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["rascunho", "aguardando_validacao", "aprovado", "recusado"]
+        },
+        "submittedByUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "submittedByName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "submittedAtIso": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "reviewedByUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "reviewedByName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "reviewedAtIso": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "rejectionReason": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "carriedFromMonth": {
+          "type": "string",
+          "maxLength": 7
+        },
+        "createdByUid": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "updatedByName": {
+        "createdAt": {
           "type": "string",
-          "minLength": 2,
-          "maxLength": 80
+          "format": "date-time"
         },
         "updatedAt": {
           "type": "string",
@@ -341,21 +389,45 @@
       },
       "required": [
         "workspaceId",
+        "monthKey",
         "baseDate",
         "currentDate",
-        "updatedByUid",
-        "updatedByName",
+        "baseValidated",
+        "currentValidated",
+        "status",
+        "submittedByUid",
+        "submittedByName",
+        "submittedAtIso",
+        "reviewedByUid",
+        "reviewedByName",
+        "reviewedAtIso",
+        "rejectionReason",
+        "carriedFromMonth",
+        "createdByUid",
+        "createdAt",
         "updatedAt"
       ]
     },
     "InventoryItem": {
       "title": "InventoryItem",
-      "description": "Ingrediente ou item de embalagem do inventário com quantidade base e quantidade hoje.",
+      "description": "Ingrediente ou item de embalagem do inventário mensal com quantidade base e quantidade hoje.",
       "type": "object",
       "properties": {
         "workspaceId": {
           "type": "string",
           "enum": ["creps-urca"]
+        },
+        "periodId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "monthKey": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 7,
+          "pattern": "^\\d{4}-\\d{2}$"
         },
         "name": {
           "type": "string",
@@ -412,6 +484,8 @@
       },
       "required": [
         "workspaceId",
+        "periodId",
+        "monthKey",
         "name",
         "category",
         "unit",
@@ -516,13 +590,13 @@
       "schema": { "$ref": "#/entities/TransitionPayment" },
       "description": "Pagamentos e custos pré-operacionais realizados pelos sócios."
     },
-    "/inventory_meta/{metaId}": {
-      "schema": { "$ref": "#/entities/InventoryMeta" },
-      "description": "Datas manuais de contagem Base e Hoje do inventário."
+    "/inventory_periods/{periodId}": {
+      "schema": { "$ref": "#/entities/InventoryPeriod" },
+      "description": "Períodos mensais de inventário com datas Base/Hoje validadas e fluxo de aprovação."
     },
     "/inventory_items/{itemId}": {
       "schema": { "$ref": "#/entities/InventoryItem" },
-      "description": "Itens e quantidades do inventário de ingredientes da Creps Urca."
+      "description": "Itens e quantidades mensais do inventário de ingredientes da Creps Urca."
     },
     "/audit_logs/{logId}": {
       "schema": { "$ref": "#/entities/AuditLog" },

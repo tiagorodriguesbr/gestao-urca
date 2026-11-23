@@ -114,8 +114,25 @@ export const VALIDATION_LIMITS = {
   INVENTORY_UNIT_MAX: 20,
   INVENTORY_QTY_MAX: 1000000,
   INVENTORY_NOTES_MAX: 300,
+  INVENTORY_REJECTION_MAX: 300,
+  MONTH_KEY_REGEX: /^\d{4}-\d{2}$/,
   AUDIT_SUMMARY_MAX: 300,
 } as const;
+
+export const INVENTORY_PERIOD_STATUSES = [
+  'rascunho',
+  'aguardando_validacao',
+  'aprovado',
+  'recusado',
+] as const;
+export type InventoryPeriodStatus = (typeof INVENTORY_PERIOD_STATUSES)[number];
+
+export const INVENTORY_PERIOD_STATUS_LABELS: Record<InventoryPeriodStatus, string> = {
+  rascunho: 'Em preenchimento',
+  aguardando_validacao: 'Aguardando validação',
+  aprovado: 'Aprovado e bloqueado',
+  recusado: 'Recusado p/ ajustes',
+};
 
 export interface UserProfile {
   id: string;
@@ -178,19 +195,34 @@ export interface TransitionPayment {
   hasPendingWrites?: boolean;
 }
 
-export interface InventoryMeta {
+export interface InventoryPeriod {
   id: string;
   workspaceId: typeof WORKSPACE_ID;
+  monthKey: string;
   baseDate: string;
   currentDate: string;
-  updatedByUid: string;
-  updatedByName: string;
+  baseValidated: boolean;
+  currentValidated: boolean;
+  status: InventoryPeriodStatus;
+  submittedByUid: string;
+  submittedByName: string;
+  submittedAtIso: string;
+  reviewedByUid: string;
+  reviewedByName: string;
+  reviewedAtIso: string;
+  rejectionReason: string;
+  carriedFromMonth: string;
+  createdByUid: string;
+  createdAt?: unknown;
   updatedAt?: unknown;
+  hasPendingWrites?: boolean;
 }
 
 export interface InventoryItem {
   id: string;
   workspaceId: typeof WORKSPACE_ID;
+  periodId: string;
+  monthKey: string;
   name: string;
   category: InventoryCategory;
   unit: string;
@@ -224,7 +256,7 @@ export interface RealtimeAlert {
   id: string;
   title: string;
   message: string;
-  kind: 'urgent' | 'payment' | 'task' | 'system';
+  kind: 'urgent' | 'payment' | 'task' | 'inventory' | 'system';
   createdAt: number;
   read: boolean;
 }
@@ -356,4 +388,60 @@ export function getDaysUntilDue(dueDate: string): number {
   const todayUtc = Date.UTC(ty, tm - 1, td);
   const dueUtc = Date.UTC(dy, dm - 1, dd);
   return Math.round((dueUtc - todayUtc) / (1000 * 60 * 60 * 24));
+}
+
+const PT_BR_MONTHS = [
+  'Janeiro',
+  'Fevereiro',
+  'Março',
+  'Abril',
+  'Maio',
+  'Junho',
+  'Julho',
+  'Agosto',
+  'Setembro',
+  'Outubro',
+  'Novembro',
+  'Dezembro',
+] as const;
+
+export function getCurrentMonthKey(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
+}
+
+export function getPreviousMonthKey(monthKey: string): string {
+  if (!VALIDATION_LIMITS.MONTH_KEY_REGEX.test(monthKey)) return '';
+  const [y, m] = monthKey.split('-').map(Number);
+  if (m === 1) return `${y - 1}-12`;
+  return `${y}-${String(m - 1).padStart(2, '0')}`;
+}
+
+export function getNextMonthKey(monthKey: string): string {
+  if (!VALIDATION_LIMITS.MONTH_KEY_REGEX.test(monthKey)) return getCurrentMonthKey();
+  const [y, m] = monthKey.split('-').map(Number);
+  if (m === 12) return `${y + 1}-01`;
+  return `${y}-${String(m + 1).padStart(2, '0')}`;
+}
+
+export function formatMonthKeyBR(monthKey: string): string {
+  if (!monthKey || !VALIDATION_LIMITS.MONTH_KEY_REGEX.test(monthKey)) return monthKey || '—';
+  const [y, m] = monthKey.split('-').map(Number);
+  const label = PT_BR_MONTHS[m - 1] || String(m).padStart(2, '0');
+  return `${label} / ${y}`;
+}
+
+export function formatIsoTimestampBR(iso: string): string {
+  if (!iso) return '—';
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return iso;
+  return dt.toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }

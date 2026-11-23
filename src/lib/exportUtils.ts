@@ -4,10 +4,12 @@ import autoTable from 'jspdf-autotable';
 import {
   formatCurrencyBRL,
   formatDateBR,
+  formatMonthKeyBR,
   getTodayIsoDate,
+  INVENTORY_PERIOD_STATUS_LABELS,
   type AuditLog,
   type InventoryItem,
-  type InventoryMeta,
+  type InventoryPeriod,
   type TransitionPayment,
   type TransitionTask,
 } from '../types/domain';
@@ -303,27 +305,39 @@ export async function exportMonthlyPdf(params: {
 
 export function exportInventoryPdf(params: {
   items: InventoryItem[];
-  meta: InventoryMeta | null;
-  categoryLabel: string;
+  period: InventoryPeriod;
+  selectedCategoriesLabel: string;
 }) {
-  const { items, meta, categoryLabel } = params;
+  const { items, period, selectedCategoriesLabel } = params;
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
 
-  const baseDateLabel = meta?.baseDate ? formatDateBR(meta.baseDate) : 'Não informada';
-  const currentDateLabel = meta?.currentDate ? formatDateBR(meta.currentDate) : 'Não informada';
+  const monthLabel = formatMonthKeyBR(period.monthKey);
+  const baseDateLabel = period.baseDate ? formatDateBR(period.baseDate) : 'Não informada';
+  const currentDateLabel = period.currentDate ? formatDateBR(period.currentDate) : 'Não informada';
+  const baseTag = period.baseValidated ? 'Validada' : 'Pendente';
+  const currentTag = period.currentValidated ? 'Validada' : 'Pendente';
+  const statusLabel =
+    period.status === 'aprovado' && period.reviewedByName
+      ? `Aprovado por ${period.reviewedByName}`
+      : INVENTORY_PERIOD_STATUS_LABELS[period.status];
 
   pdf.setFillColor(15, 118, 110);
-  pdf.rect(0, 0, 210, 30, 'F');
+  pdf.rect(0, 0, 210, 34, 'F');
   pdf.setTextColor(255, 255, 255);
   pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(16);
-  pdf.text('CREPS URCA — Inventário de Estoque e Ingredientes', 14, 13);
+  pdf.setFontSize(15.5);
+  pdf.text(`CREPS URCA — Inventário de Estoque (${monthLabel})`, 14, 12);
   pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(9.5);
+  pdf.setFontSize(9);
   pdf.text(
-    `Data Base: ${baseDateLabel}  ·  Data Hoje: ${currentDateLabel}  ·  Filtro: ${categoryLabel}`,
+    `Qtd. Base: ${baseDateLabel} (${baseTag})   ·   Qtd. Hoje: ${currentDateLabel} (${currentTag})`,
     14,
-    22
+    20
+  );
+  pdf.text(
+    `Status: ${statusLabel}   ·   Categorias: ${selectedCategoriesLabel}`,
+    14,
+    27
   );
 
   const countedCount = items.filter((i) => i.baseQty > 0 || i.currentQty > 0).length;
@@ -331,18 +345,18 @@ export function exportInventoryPdf(params: {
 
   pdf.setTextColor(15, 23, 42);
   pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(10.5);
+  pdf.setFontSize(10);
   pdf.text(
-    `Resumo: ${items.length} itens listados  ·  ${countedCount} com contagem preenchida  ·  ${changedCount} com variação`,
+    `Resumo: ${items.length} itens exportados  ·  ${countedCount} com contagem preenchida  ·  ${changedCount} com variação`,
     14,
-    38
+    42
   );
 
   const fmtQty = (n: number) =>
     new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 }).format(n);
 
   autoTable(pdf, {
-    startY: 43,
+    startY: 47,
     head: [
       [
         'Categoria',
@@ -351,6 +365,7 @@ export function exportInventoryPdf(params: {
         `Qtd. Base\n(${baseDateLabel})`,
         `Qtd. Hoje\n(${currentDateLabel})`,
         'Variação',
+        'Observação',
       ],
     ],
     body:
@@ -365,12 +380,13 @@ export function exportInventoryPdf(params: {
               fmtQty(item.baseQty),
               fmtQty(item.currentQty),
               diffStr,
+              item.notes || '—',
             ];
           })
-        : [['—', 'Nenhum item no inventário', '—', '0', '0', '0']],
+        : [['—', 'Nenhum item nas categorias selecionadas', '—', '0', '0', '0', '—']],
     theme: 'striped',
-    headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8.5 },
-    bodyStyles: { fontSize: 8, textColor: [30, 41, 59] },
+    headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8 },
+    bodyStyles: { fontSize: 7.8, textColor: [30, 41, 59] },
     columnStyles: {
       2: { halign: 'center' },
       3: { halign: 'right', fontStyle: 'bold' },
@@ -379,5 +395,5 @@ export function exportInventoryPdf(params: {
     },
   });
 
-  pdf.save(`Creps_Urca_Inventario_${getTodayIsoDate()}.pdf`);
+  pdf.save(`Creps_Urca_Inventario_${period.monthKey}_${getTodayIsoDate()}.pdf`);
 }
