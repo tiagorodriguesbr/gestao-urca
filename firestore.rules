@@ -1,0 +1,299 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Global Hardened Helpers
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn()
+        && request.auth.token.email == 'tiago.rodrigues2933@gmail.com'
+        && request.auth.token.email_verified == true;
+    }
+
+    function userProfileExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userProfileData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isMaster() {
+      return isBootstrappedAdmin()
+        || (
+          isSignedIn()
+          && userProfileExists()
+          && userProfileData().active == true
+          && userProfileData().role == 'master'
+        );
+    }
+
+    function isTeamMember() {
+      return isMaster()
+        || (
+          isSignedIn()
+          && userProfileExists()
+          && userProfileData().active == true
+          && userProfileData().role in ['master', 'manager']
+        );
+    }
+
+    function isValidIsoDate(val) {
+      return val is string && val.size() == 10 && val.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    // =========================================================================
+    // Entity Validation Blueprints
+    // =========================================================================
+    function isValidUserProfile(data, targetUid) {
+      return data.keys().hasAll([
+          'uid', 'email', 'displayName', 'role', 'active', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'role', 'active', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == targetUid
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 150
+        && data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 80
+        && data.role in ['master', 'manager']
+        && data.active is bool
+        && isValidId(data.createdByUid)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTask(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'title', 'description', 'category', 'assigneeName',
+          'dueDate', 'status', 'priority', 'completedAt',
+          'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'title', 'description', 'category', 'assigneeName',
+          'dueDate', 'status', 'priority', 'completedAt',
+          'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
+        ])
+        && data.workspaceId == 'creps-urca'
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 140
+        && data.description is string && data.description.size() <= 1000
+        && data.category in [
+          'RH & Equipe',
+          'Sistemas & PDV',
+          'Financeiro & Bancos',
+          'Estoque & Inventário',
+          'Jurídico & Contábil',
+          'Operacional'
+        ]
+        && data.assigneeName is string && data.assigneeName.size() >= 2 && data.assigneeName.size() <= 80
+        && isValidIsoDate(data.dueDate)
+        && data.status in ['pendente', 'em_andamento', 'concluido']
+        && data.priority in ['baixa', 'media', 'alta', 'urgente']
+        && data.completedAt is string && data.completedAt.size() <= 40
+        && isValidId(data.createdByUid)
+        && data.createdByName is string && data.createdByName.size() >= 2 && data.createdByName.size() <= 80
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'description', 'amount', 'paidBy', 'category',
+          'paymentMethod', 'paymentDate', 'status', 'receiptRef', 'notes',
+          'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'description', 'amount', 'paidBy', 'category',
+          'paymentMethod', 'paymentDate', 'status', 'receiptRef', 'notes',
+          'createdByUid', 'createdByName', 'createdAt', 'updatedAt'
+        ])
+        && data.workspaceId == 'creps-urca'
+        && data.description is string && data.description.size() >= 2 && data.description.size() <= 160
+        && data.amount is number && data.amount > 0 && data.amount <= 10000000
+        && data.paidBy in ['Tiago', 'Letícia', 'Empresa Creps Urca']
+        && data.category in [
+          'Equipamentos & PDV',
+          'RH & Exames',
+          'Taxas & Registros',
+          'Estoque Inicial',
+          'Reforma & Estrutura',
+          'Serviços & Sistemas',
+          'Outros'
+        ]
+        && data.paymentMethod in ['PIX', 'Cartão Corporativo', 'Transferência', 'Boleto', 'Dinheiro']
+        && isValidIsoDate(data.paymentDate)
+        && data.status in ['pago', 'agendado']
+        && data.receiptRef is string && data.receiptRef.size() <= 120
+        && data.notes is string && data.notes.size() <= 600
+        && isValidId(data.createdByUid)
+        && data.createdByName is string && data.createdByName.size() >= 2 && data.createdByName.size() <= 80
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'entityType', 'entityId', 'action', 'summary',
+          'actorUid', 'actorEmail', 'actorName', 'changedFields',
+          'amount', 'source', 'timestamp'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'entityType', 'entityId', 'action', 'summary',
+          'actorUid', 'actorEmail', 'actorName', 'changedFields',
+          'amount', 'source', 'timestamp'
+        ])
+        && data.workspaceId == 'creps-urca'
+        && data.entityType in ['task', 'payment', 'user', 'system']
+        && isValidId(data.entityId)
+        && data.action in ['create', 'update', 'delete']
+        && data.summary is string && data.summary.size() >= 2 && data.summary.size() <= 300
+        && isValidId(data.actorUid)
+        && data.actorUid == request.auth.uid
+        && data.actorEmail is string && data.actorEmail.size() >= 5 && data.actorEmail.size() <= 150
+        && data.actorName is string && data.actorName.size() >= 2 && data.actorName.size() <= 80
+        && data.changedFields is list && data.changedFields.size() <= 20
+        && (data.changedFields.size() == 0 || data.changedFields[0] is string)
+        && data.amount is number && data.amount >= 0 && data.amount <= 10000000
+        && data.source in ['client_atomic_batch', 'cloud_function_trigger']
+        && data.timestamp == request.time;
+    }
+
+    // =========================================================================
+    // Collection: /users/{userId}
+    // =========================================================================
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isMaster());
+      allow list: if isMaster();
+
+      allow create: if isSignedIn()
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isMaster()
+          || (isBootstrappedAdmin() && request.auth.uid == userId && incoming().role == 'master')
+        );
+
+      allow update: if isSignedIn()
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'email', 'displayName', 'role', 'active', 'updatedAt'
+        ])
+        && isMaster();
+
+      allow delete: if isSignedIn()
+        && isValidId(userId)
+        && userId != request.auth.uid
+        && isMaster();
+    }
+
+    // =========================================================================
+    // Collection: /tasks/{taskId}
+    // =========================================================================
+    match /tasks/{taskId} {
+      allow get: if isSignedIn() && isValidId(taskId) && isTeamMember();
+      allow list: if isSignedIn() && resource.data.workspaceId == 'creps-urca' && isTeamMember();
+
+      allow create: if isSignedIn()
+        && isValidId(taskId)
+        && isValidTask(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isMaster();
+
+      allow update: if isSignedIn()
+        && isValidId(taskId)
+        && isValidTask(incoming())
+        && incoming().workspaceId == existing().workspaceId
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdByName == existing().createdByName
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'description', 'category', 'assigneeName',
+          'dueDate', 'status', 'priority', 'completedAt', 'updatedAt'
+        ])
+        && isMaster();
+
+      allow delete: if isSignedIn() && isValidId(taskId) && isMaster();
+    }
+
+    // =========================================================================
+    // Collection: /payments/{paymentId}
+    // =========================================================================
+    match /payments/{paymentId} {
+      allow get: if isSignedIn() && isValidId(paymentId) && isTeamMember();
+      allow list: if isSignedIn() && resource.data.workspaceId == 'creps-urca' && isTeamMember();
+
+      allow create: if isSignedIn()
+        && isValidId(paymentId)
+        && isValidPayment(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isMaster();
+
+      allow update: if isSignedIn()
+        && isValidId(paymentId)
+        && isValidPayment(incoming())
+        && incoming().workspaceId == existing().workspaceId
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdByName == existing().createdByName
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'description', 'amount', 'paidBy', 'category', 'paymentMethod',
+          'paymentDate', 'status', 'receiptRef', 'notes', 'updatedAt'
+        ])
+        && isMaster();
+
+      allow delete: if isSignedIn() && isValidId(paymentId) && isMaster();
+    }
+
+    // =========================================================================
+    // Collection: /audit_logs/{logId}
+    // =========================================================================
+    match /audit_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && isMaster();
+      allow list: if isSignedIn() && resource.data.workspaceId == 'creps-urca' && isMaster();
+
+      allow create: if isSignedIn()
+        && isValidId(logId)
+        && isValidAuditLog(incoming())
+        && isMaster();
+
+      // Strictly immutable audit trail
+      allow update, delete: if false;
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Creps Urca — Transição & Finanças",
+  "description": "Painel administrativo e controle financeiro pré-operacional da transição da loja Creps Urca com checklist, relatórios e auditoria em tempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
