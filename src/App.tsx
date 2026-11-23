@@ -13,7 +13,6 @@ import {
   doc,
   limit,
   onSnapshot,
-  orderBy,
   query,
   where,
 } from 'firebase/firestore';
@@ -400,16 +399,27 @@ function MainShell() {
       const auditQuery = query(
         collection(db, 'audit_logs'),
         where('workspaceId', '==', WORKSPACE_ID),
-        orderBy('timestamp', 'desc'),
         limit(120)
       );
       unsubAudit = onSnapshot(
         auditQuery,
         (snapshot) => {
-          const list: AuditLog[] = snapshot.docs.map((d) => ({
-            id: d.id,
-            ...(d.data() as Omit<AuditLog, 'id'>),
-          }));
+          const list: AuditLog[] = snapshot.docs
+            .map((d) => ({
+              id: d.id,
+              ...(d.data() as Omit<AuditLog, 'id'>),
+            }))
+            .sort((a, b) => {
+              const ta =
+                typeof (a.timestamp as { toMillis?: () => number })?.toMillis === 'function'
+                  ? (a.timestamp as { toMillis: () => number }).toMillis()
+                  : 0;
+              const tb =
+                typeof (b.timestamp as { toMillis?: () => number })?.toMillis === 'function'
+                  ? (b.timestamp as { toMillis: () => number }).toMillis()
+                  : 0;
+              return tb - ta;
+            });
           setAuditLogs(list);
           setAuditLoading(false);
         },

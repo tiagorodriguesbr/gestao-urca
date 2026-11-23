@@ -1,22 +1,22 @@
 {
   "firestore": {
-    "rules": "firestore.rules"
+    "database": "ai-studio-d66f2262-5512-45ba-9cb9-7318c7b14bc5",
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
   },
   "hosting": {
+    "site": "gestao-urca",
     "public": "dist",
-    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
     "rewrites": [
       {
         "source": "**",
         "destination": "/index.html"
       }
     ]
-  },
-  "functions": [
-    {
-      "source": "functions",
-      "codebase": "default",
-      "predeploy": ["npm --prefix \"$RESOURCE_DIR\" run build"]
-    }
-  ]
+  }
 }

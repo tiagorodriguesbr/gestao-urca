@@ -1,12 +1,12 @@
 {
-  "projectId": "coastal-plate-llxdt",
-  "appId": "1:792123727392:web:3d0603d55111987ae1a645",
-  "apiKey": "AIzaSyB9_paKJxkhBTampuejiQ4TFP1YUpNXwCY",
-  "authDomain": "coastal-plate-llxdt.firebaseapp.com",
+  "projectId": "tarefas-crepelocks",
+  "appId": "1:200970327028:web:43ce52c40c7b3f57bedfa1",
+  "apiKey": "AIzaSyBFCzmfqaoEJHkdrMov-HgOc7q_f2PPEQQ",
+  "authDomain": "tarefas-crepelocks.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-d66f2262-5512-45ba-9cb9-7318c7b14bc5",
-  "storageBucket": "coastal-plate-llxdt.firebasestorage.app",
-  "messagingSenderId": "792123727392",
+  "storageBucket": "tarefas-crepelocks.firebasestorage.app",
+  "messagingSenderId": "200970327028",
   "measurementId": "",
-  "oAuthClientId": "792123727392-em0gdc0hre01145sntg1h3hbs3kg3fjp.apps.googleusercontent.com",
+  "oAuthClientId": "200970327028-8abn2povauppklhmm7cti8s5fb8881m0.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }
