@@ -8,15 +8,23 @@ import {
 } from 'firebase/firestore';
 import { type User } from 'firebase/auth';
 import { db, handleFirestoreError, OperationType } from './firebase';
+import { RESTAURANT_INVENTORY_SEED } from '../data/restaurantInventorySeed';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   formatCurrencyBRL,
+  GERENTE_EDITABLE_TABS,
+  GERENTE_VIEWABLE_TABS,
   sanitizeText,
+  USER_ROLE_LABELS,
+  validateInventoryItemPayload,
   validatePaymentPayload,
   validateTaskPayload,
   VALIDATION_LIMITS,
   WORKSPACE_ID,
-  type PaidByOption,
+  type GerenteEditableTab,
+  type GerenteViewableTab,
+  type InventoryCategory,
+  type InventoryItem,
   type PaymentCategory,
   type PaymentMethod,
   type PaymentStatus,
@@ -36,7 +44,7 @@ interface ActorContext {
 }
 
 function buildAuditDoc(params: {
-  entityType: 'task' | 'payment' | 'user' | 'system';
+  entityType: 'task' | 'payment' | 'user' | 'inventory' | 'partner' | 'system';
   entityId: string;
   action: 'create' | 'update' | 'delete';
   summary: string;
@@ -78,7 +86,9 @@ export async function ensureBootstrappedAdminProfile(firebaseUser: User): Promis
         uid: firebaseUser.uid,
         email: sanitizeText(firebaseUser.email, VALIDATION_LIMITS.EMAIL_MAX),
         displayName: sanitizeText(firebaseUser.displayName || 'Tiago Rodrigues', VALIDATION_LIMITS.DISPLAY_NAME_MAX),
-        role: 'master' as UserRole,
+        role: 'diretor' as UserRole,
+        allowedTabs: [...GERENTE_VIEWABLE_TABS],
+        editableTabs: [...GERENTE_EDITABLE_TABS],
         active: true,
         createdByUid: firebaseUser.uid,
         createdAt: serverTimestamp(),
@@ -251,7 +261,7 @@ export async function createPaymentWithAudit(
   input: {
     description: string;
     amount: number;
-    paidBy: PaidByOption;
+    paidBy: string;
     category: PaymentCategory;
     paymentMethod: PaymentMethod;
     paymentDate: string;
@@ -268,13 +278,14 @@ export async function createPaymentWithAudit(
   const batch = writeBatch(db);
 
   const description = sanitizeText(input.description, VALIDATION_LIMITS.PAYMENT_DESC_MAX);
+  const paidBy = sanitizeText(input.paidBy, VALIDATION_LIMITS.DISPLAY_NAME_MAX);
   const amount = Math.round(input.amount * 100) / 100;
 
   batch.set(paymentRef, {
     workspaceId: WORKSPACE_ID,
     description,
     amount,
-    paidBy: input.paidBy,
+    paidBy,
     category: input.category,
     paymentMethod: input.paymentMethod,
     paymentDate: input.paymentDate,
@@ -293,7 +304,7 @@ export async function createPaymentWithAudit(
       entityType: 'payment',
       entityId: paymentRef.id,
       action: 'create',
-      summary: `Lançado pagamento "${description}" (${formatCurrencyBRL(amount)}) por ${input.paidBy}`,
+      summary: `Lançado pagamento "${description}" (${formatCurrencyBRL(amount)}) por ${paidBy}`,
       actor,
       changedFields: ['description', 'amount', 'paidBy', 'category', 'paymentDate', 'status'],
       amount,
@@ -314,7 +325,7 @@ export async function updatePaymentWithAudit(
   updates: {
     description: string;
     amount: number;
-    paidBy: PaidByOption;
+    paidBy: string;
     category: PaymentCategory;
     paymentMethod: PaymentMethod;
     paymentDate: string;
@@ -331,12 +342,13 @@ export async function updatePaymentWithAudit(
   const batch = writeBatch(db);
 
   const description = sanitizeText(updates.description, VALIDATION_LIMITS.PAYMENT_DESC_MAX);
+  const paidBy = sanitizeText(updates.paidBy, VALIDATION_LIMITS.DISPLAY_NAME_MAX);
   const amount = Math.round(updates.amount * 100) / 100;
 
   const changedFields: string[] = [];
   if (existingPayment.description !== description) changedFields.push('description');
   if (existingPayment.amount !== amount) changedFields.push('amount');
-  if (existingPayment.paidBy !== updates.paidBy) changedFields.push('paidBy');
+  if (existingPayment.paidBy !== paidBy) changedFields.push('paidBy');
   if (existingPayment.category !== updates.category) changedFields.push('category');
   if (existingPayment.paymentMethod !== updates.paymentMethod) changedFields.push('paymentMethod');
   if (existingPayment.paymentDate !== updates.paymentDate) changedFields.push('paymentDate');
@@ -348,7 +360,7 @@ export async function updatePaymentWithAudit(
   batch.update(paymentRef, {
     description,
     amount,
-    paidBy: updates.paidBy,
+    paidBy,
     category: updates.category,
     paymentMethod: updates.paymentMethod,
     paymentDate: updates.paymentDate,
@@ -414,25 +426,47 @@ export async function createUserProfileWithAudit(
     email: string;
     displayName: string;
     role: UserRole;
+    allowedTabs: GerenteViewableTab[];
+    editableTabs: GerenteEditableTab[];
   }
 ): Promise<void> {
   const userRef = doc(db, 'users', input.uid);
+  const partnerRef = doc(db, 'partners', input.uid);
   const auditRef = doc(collection(db, 'audit_logs'));
   const batch = writeBatch(db);
 
   const displayName = sanitizeText(input.displayName, VALIDATION_LIMITS.DISPLAY_NAME_MAX);
   const email = sanitizeText(input.email, VALIDATION_LIMITS.EMAIL_MAX);
+  const allowedTabs =
+    input.role === 'gerente' ? input.allowedTabs : [...GERENTE_VIEWABLE_TABS];
+  const editableTabs =
+    input.role === 'gerente'
+      ? input.editableTabs.filter((t) => allowedTabs.includes(t))
+      : [...GERENTE_EDITABLE_TABS];
 
   batch.set(userRef, {
     uid: input.uid,
     email,
     displayName,
     role: input.role,
+    allowedTabs,
+    editableTabs,
     active: true,
     createdByUid: actor.uid,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+
+  if (input.role === 'socio') {
+    batch.set(partnerRef, {
+      workspaceId: WORKSPACE_ID,
+      uid: input.uid,
+      displayName,
+      active: true,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
 
   batch.set(
     auditRef,
@@ -440,9 +474,9 @@ export async function createUserProfileWithAudit(
       entityType: 'user',
       entityId: input.uid,
       action: 'create',
-      summary: `Criado acesso ${input.role === 'master' ? 'Administrador Master' : 'Gerente de Loja'} para ${displayName} (${email})`,
+      summary: `Criado acesso ${USER_ROLE_LABELS[input.role]} para ${displayName} (${email})`,
       actor,
-      changedFields: ['email', 'displayName', 'role', 'active'],
+      changedFields: ['email', 'displayName', 'role', 'allowedTabs', 'editableTabs', 'active'],
     })
   );
 
@@ -459,26 +493,55 @@ export async function updateUserProfileWithAudit(
   updates: {
     displayName: string;
     role: UserRole;
+    allowedTabs: GerenteViewableTab[];
+    editableTabs: GerenteEditableTab[];
     active: boolean;
   }
 ): Promise<void> {
   const userRef = doc(db, 'users', target.uid);
+  const partnerRef = doc(db, 'partners', target.uid);
   const auditRef = doc(collection(db, 'audit_logs'));
   const batch = writeBatch(db);
 
   const displayName = sanitizeText(updates.displayName, VALIDATION_LIMITS.DISPLAY_NAME_MAX);
+  const allowedTabs =
+    updates.role === 'gerente' ? updates.allowedTabs : [...GERENTE_VIEWABLE_TABS];
+  const editableTabs =
+    updates.role === 'gerente'
+      ? updates.editableTabs.filter((t) => allowedTabs.includes(t))
+      : [...GERENTE_EDITABLE_TABS];
+
   const changedFields: string[] = [];
   if (target.displayName !== displayName) changedFields.push('displayName');
   if (target.role !== updates.role) changedFields.push('role');
   if (target.active !== updates.active) changedFields.push('active');
-  if (changedFields.length === 0) changedFields.push('updatedAt');
+  changedFields.push('allowedTabs', 'editableTabs');
 
   batch.update(userRef, {
     displayName,
     role: updates.role,
+    allowedTabs,
+    editableTabs,
     active: updates.active,
     updatedAt: serverTimestamp(),
   });
+
+  if (updates.role === 'socio') {
+    batch.set(
+      partnerRef,
+      {
+        workspaceId: WORKSPACE_ID,
+        uid: target.uid,
+        displayName,
+        active: updates.active,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: false }
+    );
+  } else {
+    batch.delete(partnerRef);
+  }
 
   batch.set(
     auditRef,
@@ -486,7 +549,7 @@ export async function updateUserProfileWithAudit(
       entityType: 'user',
       entityId: target.uid,
       action: 'update',
-      summary: `Atualizado perfil de ${displayName}: perfil ${updates.role === 'master' ? 'Master' : 'Gerente'} · ${updates.active ? 'Ativo' : 'Suspenso'}`,
+      summary: `Atualizado perfil de ${displayName}: ${USER_ROLE_LABELS[updates.role]} · ${updates.active ? 'Ativo' : 'Suspenso'}`,
       actor,
       changedFields,
     })
@@ -504,10 +567,12 @@ export async function deleteUserProfileWithAudit(
   target: UserProfile
 ): Promise<void> {
   const userRef = doc(db, 'users', target.uid);
+  const partnerRef = doc(db, 'partners', target.uid);
   const auditRef = doc(collection(db, 'audit_logs'));
   const batch = writeBatch(db);
 
   batch.delete(userRef);
+  batch.delete(partnerRef);
   batch.set(
     auditRef,
     buildAuditDoc({
@@ -524,6 +589,231 @@ export async function deleteUserProfileWithAudit(
     await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `users/${target.uid}`);
+  }
+}
+
+export async function saveInventoryMetaWithAudit(
+  actor: ActorContext,
+  input: { baseDate: string; currentDate: string }
+): Promise<void> {
+  if (input.baseDate && !VALIDATION_LIMITS.ISO_DATE_REGEX.test(input.baseDate)) {
+    throw new Error('Data Base do inventário inválida.');
+  }
+  if (input.currentDate && !VALIDATION_LIMITS.ISO_DATE_REGEX.test(input.currentDate)) {
+    throw new Error('Data Hoje do inventário inválida.');
+  }
+
+  const metaRef = doc(db, 'inventory_meta', WORKSPACE_ID);
+  const auditRef = doc(collection(db, 'audit_logs'));
+  const batch = writeBatch(db);
+
+  batch.set(metaRef, {
+    workspaceId: WORKSPACE_ID,
+    baseDate: input.baseDate,
+    currentDate: input.currentDate,
+    updatedByUid: actor.uid,
+    updatedByName: sanitizeText(actor.displayName, VALIDATION_LIMITS.DISPLAY_NAME_MAX),
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.set(
+    auditRef,
+    buildAuditDoc({
+      entityType: 'inventory',
+      entityId: WORKSPACE_ID,
+      action: 'update',
+      summary: `Atualizadas datas do inventário (Base: ${input.baseDate || '—'} · Hoje: ${input.currentDate || '—'})`,
+      actor,
+      changedFields: ['baseDate', 'currentDate'],
+    })
+  );
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `inventory_meta/${WORKSPACE_ID}`);
+  }
+}
+
+export async function seedRestaurantInventoryWithAudit(actor: ActorContext): Promise<void> {
+  const batch = writeBatch(db);
+  RESTAURANT_INVENTORY_SEED.forEach((item, index) => {
+    const itemRef = doc(collection(db, 'inventory_items'));
+    batch.set(itemRef, {
+      workspaceId: WORKSPACE_ID,
+      name: sanitizeText(item.name, VALIDATION_LIMITS.INVENTORY_NAME_MAX),
+      category: item.category,
+      unit: sanitizeText(item.unit, VALIDATION_LIMITS.INVENTORY_UNIT_MAX),
+      baseQty: 0,
+      currentQty: 0,
+      notes: '',
+      sortOrder: index + 1,
+      createdByUid: actor.uid,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  });
+
+  const auditRef = doc(collection(db, 'audit_logs'));
+  batch.set(
+    auditRef,
+    buildAuditDoc({
+      entityType: 'inventory',
+      entityId: WORKSPACE_ID,
+      action: 'create',
+      summary: `Carregada base de ingredientes do restaurante (${RESTAURANT_INVENTORY_SEED.length} itens em 10 categorias)`,
+      actor,
+      changedFields: ['restaurant_inventory_seed'],
+    })
+  );
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'inventory_items');
+  }
+}
+
+export async function saveInventoryBatchCountsWithAudit(
+  actor: ActorContext,
+  updates: Array<{
+    existing: InventoryItem;
+    baseQty: number;
+    currentQty: number;
+    unit: string;
+    notes: string;
+  }>
+): Promise<void> {
+  if (updates.length === 0) return;
+
+  const chunks: typeof updates[] = [];
+  for (let i = 0; i < updates.length; i += 400) {
+    chunks.push(updates.slice(i, i + 400));
+  }
+
+  for (const chunk of chunks) {
+    const batch = writeBatch(db);
+    for (const row of chunk) {
+      const err = validateInventoryItemPayload({
+        name: row.existing.name,
+        category: row.existing.category,
+        unit: row.unit,
+        baseQty: row.baseQty,
+        currentQty: row.currentQty,
+        notes: row.notes,
+      });
+      if (err) throw new Error(`${row.existing.name}: ${err}`);
+
+      const ref = doc(db, 'inventory_items', row.existing.id);
+      batch.update(ref, {
+        unit: sanitizeText(row.unit, VALIDATION_LIMITS.INVENTORY_UNIT_MAX),
+        baseQty: Math.round(row.baseQty * 1000) / 1000,
+        currentQty: Math.round(row.currentQty * 1000) / 1000,
+        notes: sanitizeText(row.notes, VALIDATION_LIMITS.INVENTORY_NOTES_MAX),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    const auditRef = doc(collection(db, 'audit_logs'));
+    batch.set(
+      auditRef,
+      buildAuditDoc({
+        entityType: 'inventory',
+        entityId: WORKSPACE_ID,
+        action: 'update',
+        summary: `Atualizada contagem de ${chunk.length} item(ns) no inventário`,
+        actor,
+        changedFields: ['baseQty', 'currentQty', 'unit', 'notes'],
+      })
+    );
+
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'inventory_items');
+    }
+  }
+}
+
+export async function createInventoryItemWithAudit(
+  actor: ActorContext,
+  input: {
+    name: string;
+    category: InventoryCategory;
+    unit: string;
+    baseQty: number;
+    currentQty: number;
+    notes: string;
+    sortOrder: number;
+  }
+): Promise<string> {
+  const err = validateInventoryItemPayload(input);
+  if (err) throw new Error(err);
+
+  const ref = doc(collection(db, 'inventory_items'));
+  const auditRef = doc(collection(db, 'audit_logs'));
+  const batch = writeBatch(db);
+
+  const name = sanitizeText(input.name, VALIDATION_LIMITS.INVENTORY_NAME_MAX);
+  batch.set(ref, {
+    workspaceId: WORKSPACE_ID,
+    name,
+    category: input.category,
+    unit: sanitizeText(input.unit, VALIDATION_LIMITS.INVENTORY_UNIT_MAX),
+    baseQty: Math.round(input.baseQty * 1000) / 1000,
+    currentQty: Math.round(input.currentQty * 1000) / 1000,
+    notes: sanitizeText(input.notes, VALIDATION_LIMITS.INVENTORY_NOTES_MAX),
+    sortOrder: input.sortOrder,
+    createdByUid: actor.uid,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.set(
+    auditRef,
+    buildAuditDoc({
+      entityType: 'inventory',
+      entityId: ref.id,
+      action: 'create',
+      summary: `Incluído item "${name}" (${input.category}) no inventário`,
+      actor,
+      changedFields: ['name', 'category', 'unit', 'baseQty', 'currentQty'],
+    })
+  );
+
+  try {
+    await batch.commit();
+    return ref.id;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `inventory_items/${ref.id}`);
+  }
+}
+
+export async function deleteInventoryItemWithAudit(
+  actor: ActorContext,
+  item: InventoryItem
+): Promise<void> {
+  const ref = doc(db, 'inventory_items', item.id);
+  const auditRef = doc(collection(db, 'audit_logs'));
+  const batch = writeBatch(db);
+
+  batch.delete(ref);
+  batch.set(
+    auditRef,
+    buildAuditDoc({
+      entityType: 'inventory',
+      entityId: item.id,
+      action: 'delete',
+      summary: `Removido item "${item.name}" (${item.category}) do inventário`,
+      actor,
+      changedFields: ['deleted'],
+    })
+  );
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `inventory_items/${item.id}`);
   }
 }
 
@@ -579,7 +869,7 @@ export async function importStarterChecklistPack(actor: ActorContext): Promise<v
     {
       title: 'Validar acesso à conta bancária dos sócios',
       description:
-        'Conferir tokens, chaves PIX e alçadas de aprovação conjunta para Tiago e Letícia na conta jurídica da Creps Urca.',
+        'Conferir tokens, chaves PIX e alçadas de aprovação conjunta na conta jurídica da Creps Urca.',
       category: 'Financeiro & Bancos',
       assigneeName: 'Letícia',
       dueDate: addDays(1),

@@ -28,7 +28,7 @@ import type { ConfirmDialogState } from './ConfirmActionModal';
 interface ChecklistViewProps {
   tasks: TransitionTask[];
   loading: boolean;
-  isMaster: boolean;
+  canEdit: boolean;
   onCreateTask: (input: {
     title: string;
     description: string;
@@ -73,7 +73,7 @@ const PRIORITY_LABELS: Record<TaskPriority, string> = {
 export const ChecklistView: React.FC<ChecklistViewProps> = ({
   tasks,
   loading,
-  isMaster,
+  canEdit,
   onCreateTask,
   onUpdateTask,
   onDeleteTask,
@@ -100,11 +100,11 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
   const [formError, setFormError] = useState<string | null>(null);
 
   React.useEffect(() => {
-    if (externalOpenCreate && isMaster) {
+    if (externalOpenCreate && canEdit) {
       openCreateModal();
       onConsumeExternalOpenCreate?.();
     }
-  }, [externalOpenCreate, isMaster]);
+  }, [externalOpenCreate, canEdit]);
 
   const assignees = useMemo(() => {
     const set = new Set<string>(['Tiago', 'Letícia', 'Gerente de Loja']);
@@ -220,7 +220,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
   };
 
   const handleToggleDone = (task: TransitionTask) => {
-    if (!isMaster) return;
+    if (!canEdit) return;
     const nextStatus: TaskStatus = task.status === 'concluido' ? 'pendente' : 'concluido';
     requestConfirmation({
       title:
@@ -249,7 +249,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
   };
 
   const handleDelete = (task: TransitionTask) => {
-    if (!isMaster) return;
+    if (!canEdit) return;
     requestConfirmation({
       title: 'Confirmar Exclusão de Atividade',
       description:
@@ -286,11 +286,11 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Read-only notice for Store Manager */}
-      {!isMaster && (
+      {/* Read-only notice */}
+      {!canEdit && (
         <div className="px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-900 text-xs text-slate-600 dark:text-slate-300 flex items-center justify-between gap-4">
           <span>
-            <strong>Modo Gerente de Loja (Somente Leitura):</strong> consulte os responsáveis e prazos de execução das tarefas. Inclusões e alterações são restritas aos Administradores Master.
+            <strong>Modo Somente Leitura (Gerente):</strong> consulte os responsáveis e prazos de execução das tarefas. Inclusões e alterações exigem permissão de edição liberada por um Sócio ou Diretor.
           </span>
         </div>
       )}
@@ -334,7 +334,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
           ))}
         </div>
 
-        {isMaster && (
+        {canEdit && (
           <div className="flex items-center gap-2.5 shrink-0">
             <button
               type="button"
@@ -430,7 +430,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
                   <th className="py-3 px-4">Prazo Limite</th>
                   <th className="py-3 px-4">Prioridade</th>
                   <th className="py-3 px-4">Status</th>
-                  {isMaster && <th className="py-3 px-4 text-right">Ações</th>}
+                  {canEdit && <th className="py-3 px-4 text-right">Ações</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
@@ -445,7 +445,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
                         <div className="flex items-start gap-3">
                           <button
                             type="button"
-                            disabled={!isMaster}
+                            disabled={!canEdit}
                             onClick={() => handleToggleDone(task)}
                             aria-label={
                               task.status === 'concluido'
@@ -456,7 +456,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
                               task.status === 'concluido'
                                 ? 'bg-teal-700 border-teal-700 text-white'
                                 : 'border-slate-300 dark:border-slate-600 hover:border-teal-600'
-                            } ${!isMaster ? 'cursor-default opacity-75' : 'cursor-pointer'}`}
+                            } ${!canEdit ? 'cursor-default opacity-75' : 'cursor-pointer'}`}
                           >
                             {task.status === 'concluido' && <Check className="w-3.5 h-3.5" />}
                           </button>
@@ -531,7 +531,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
                           {STATUS_LABELS[task.status]}
                         </span>
                       </td>
-                      {isMaster && (
+                      {canEdit && (
                         <td className="py-3.5 px-4 whitespace-nowrap text-right">
                           <div className="inline-flex items-center gap-1">
                             <button
@@ -563,7 +563,7 @@ export const ChecklistView: React.FC<ChecklistViewProps> = ({
       )}
 
       {/* Create / Edit Task Modal */}
-      {modalOpen && isMaster && (
+      {modalOpen && canEdit && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-[2px]"
           role="dialog"

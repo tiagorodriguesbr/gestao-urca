@@ -40,28 +40,52 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    function isMaster() {
+    function isFullAdmin() {
       return isBootstrappedAdmin()
         || (
           isSignedIn()
           && userProfileExists()
           && userProfileData().active == true
-          && userProfileData().role == 'master'
+          && userProfileData().role in ['socio', 'diretor', 'master']
         );
     }
 
     function isTeamMember() {
-      return isMaster()
+      return isFullAdmin()
         || (
           isSignedIn()
           && userProfileExists()
           && userProfileData().active == true
-          && userProfileData().role in ['master', 'manager']
+          && userProfileData().role in ['gerente', 'manager']
         );
+    }
+
+    function isGerenteWithEdit(tab) {
+      return isSignedIn()
+        && userProfileExists()
+        && userProfileData().active == true
+        && userProfileData().role == 'gerente'
+        && 'editableTabs' in userProfileData()
+        && userProfileData().editableTabs is list
+        && tab in userProfileData().editableTabs;
+    }
+
+    function isGerenteWithAnyEdit() {
+      return isSignedIn()
+        && userProfileExists()
+        && userProfileData().active == true
+        && userProfileData().role == 'gerente'
+        && 'editableTabs' in userProfileData()
+        && userProfileData().editableTabs is list
+        && userProfileData().editableTabs.size() > 0;
     }
 
     function isValidIsoDate(val) {
       return val is string && val.size() == 10 && val.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    function isValidOptionalIsoDate(val) {
+      return val is string && (val == '' || isValidIsoDate(val));
     }
 
     // =========================================================================
@@ -69,18 +93,42 @@ service cloud.firestore {
     // =========================================================================
     function isValidUserProfile(data, targetUid) {
       return data.keys().hasAll([
-          'uid', 'email', 'displayName', 'role', 'active', 'createdByUid', 'createdAt', 'updatedAt'
+          'uid', 'email', 'displayName', 'role', 'allowedTabs', 'editableTabs',
+          'active', 'createdByUid', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'uid', 'email', 'displayName', 'role', 'active', 'createdByUid', 'createdAt', 'updatedAt'
+          'uid', 'email', 'displayName', 'role', 'allowedTabs', 'editableTabs',
+          'active', 'createdByUid', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.uid)
         && data.uid == targetUid
         && data.email is string && data.email.size() >= 5 && data.email.size() <= 150
         && data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 80
-        && data.role in ['master', 'manager']
+        && data.role in ['socio', 'diretor', 'gerente']
+        && data.allowedTabs is list && data.allowedTabs.size() <= 6
+        && data.allowedTabs.hasOnly(['dashboard', 'checklist', 'payments', 'inventory', 'reports'])
+        && (data.allowedTabs.size() == 0 || data.allowedTabs[0] is string)
+        && data.editableTabs is list && data.editableTabs.size() <= 6
+        && data.editableTabs.hasOnly(['checklist', 'payments', 'inventory'])
+        && (data.editableTabs.size() == 0 || data.editableTabs[0] is string)
         && data.active is bool
         && isValidId(data.createdByUid)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPartner(data, targetId) {
+      return data.keys().hasAll([
+          'workspaceId', 'uid', 'displayName', 'active', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'uid', 'displayName', 'active', 'createdAt', 'updatedAt'
+        ])
+        && data.workspaceId == 'creps-urca'
+        && isValidId(data.uid)
+        && data.uid == targetId
+        && data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 80
+        && data.active is bool
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -132,7 +180,7 @@ service cloud.firestore {
         && data.workspaceId == 'creps-urca'
         && data.description is string && data.description.size() >= 2 && data.description.size() <= 160
         && data.amount is number && data.amount > 0 && data.amount <= 10000000
-        && data.paidBy in ['Tiago', 'Letícia', 'Empresa Creps Urca']
+        && data.paidBy is string && data.paidBy.size() >= 2 && data.paidBy.size() <= 80
         && data.category in [
           'Equipamentos & PDV',
           'RH & Exames',
@@ -153,6 +201,54 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidInventoryMeta(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'baseDate', 'currentDate', 'updatedByUid', 'updatedByName', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'baseDate', 'currentDate', 'updatedByUid', 'updatedByName', 'updatedAt'
+        ])
+        && data.workspaceId == 'creps-urca'
+        && isValidOptionalIsoDate(data.baseDate)
+        && isValidOptionalIsoDate(data.currentDate)
+        && isValidId(data.updatedByUid)
+        && data.updatedByName is string && data.updatedByName.size() >= 2 && data.updatedByName.size() <= 80
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidInventoryItem(data) {
+      return data.keys().hasAll([
+          'workspaceId', 'name', 'category', 'unit', 'baseQty', 'currentQty',
+          'notes', 'sortOrder', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'name', 'category', 'unit', 'baseQty', 'currentQty',
+          'notes', 'sortOrder', 'createdByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.workspaceId == 'creps-urca'
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.category in [
+          'Proteínas',
+          'Queijos',
+          'Estoque Seco',
+          'Hortifruti',
+          'Doces',
+          'Embalagem',
+          'Outros Congelados e Resfriados',
+          'Molhos',
+          'Basicos Delivery',
+          'Polpas e Açaí'
+        ]
+        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 20
+        && data.baseQty is number && data.baseQty >= 0 && data.baseQty <= 1000000
+        && data.currentQty is number && data.currentQty >= 0 && data.currentQty <= 1000000
+        && data.notes is string && data.notes.size() <= 300
+        && data.sortOrder is number && data.sortOrder >= 0 && data.sortOrder <= 100000
+        && isValidId(data.createdByUid)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     function isValidAuditLog(data) {
       return data.keys().hasAll([
           'workspaceId', 'entityType', 'entityId', 'action', 'summary',
@@ -165,7 +261,7 @@ service cloud.firestore {
           'amount', 'source', 'timestamp'
         ])
         && data.workspaceId == 'creps-urca'
-        && data.entityType in ['task', 'payment', 'user', 'system']
+        && data.entityType in ['task', 'payment', 'user', 'inventory', 'partner', 'system']
         && isValidId(data.entityId)
         && data.action in ['create', 'update', 'delete']
         && data.summary is string && data.summary.size() >= 2 && data.summary.size() <= 300
@@ -184,8 +280,8 @@ service cloud.firestore {
     // Collection: /users/{userId}
     // =========================================================================
     match /users/{userId} {
-      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isMaster());
-      allow list: if isMaster();
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isFullAdmin());
+      allow list: if isFullAdmin();
 
       allow create: if isSignedIn()
         && isValidId(userId)
@@ -194,8 +290,8 @@ service cloud.firestore {
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && (
-          isMaster()
-          || (isBootstrappedAdmin() && request.auth.uid == userId && incoming().role == 'master')
+          isFullAdmin()
+          || (isBootstrappedAdmin() && request.auth.uid == userId && incoming().role == 'diretor')
         );
 
       allow update: if isSignedIn()
@@ -206,14 +302,43 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'email', 'displayName', 'role', 'active', 'updatedAt'
+          'email', 'displayName', 'role', 'allowedTabs', 'editableTabs', 'active', 'updatedAt'
         ])
-        && isMaster();
+        && isFullAdmin();
 
       allow delete: if isSignedIn()
         && isValidId(userId)
         && userId != request.auth.uid
-        && isMaster();
+        && isFullAdmin();
+    }
+
+    // =========================================================================
+    // Collection: /partners/{partnerId} (Non-PII Sócio names for UI selectors)
+    // =========================================================================
+    match /partners/{partnerId} {
+      allow get: if isSignedIn() && isValidId(partnerId) && isTeamMember();
+      allow list: if isSignedIn() && resource.data.workspaceId == 'creps-urca' && isTeamMember();
+
+      allow create: if isSignedIn()
+        && isValidId(partnerId)
+        && isValidPartner(incoming(), partnerId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isFullAdmin();
+
+      allow update: if isSignedIn()
+        && isValidId(partnerId)
+        && isValidPartner(incoming(), partnerId)
+        && incoming().workspaceId == existing().workspaceId
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'active', 'updatedAt'
+        ])
+        && isFullAdmin();
+
+      allow delete: if isSignedIn() && isValidId(partnerId) && isFullAdmin();
     }
 
     // =========================================================================
@@ -229,7 +354,7 @@ service cloud.firestore {
         && incoming().createdByUid == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && isMaster();
+        && (isFullAdmin() || isGerenteWithEdit('checklist'));
 
       allow update: if isSignedIn()
         && isValidId(taskId)
@@ -243,9 +368,11 @@ service cloud.firestore {
           'title', 'description', 'category', 'assigneeName',
           'dueDate', 'status', 'priority', 'completedAt', 'updatedAt'
         ])
-        && isMaster();
+        && (isFullAdmin() || isGerenteWithEdit('checklist'));
 
-      allow delete: if isSignedIn() && isValidId(taskId) && isMaster();
+      allow delete: if isSignedIn()
+        && isValidId(taskId)
+        && (isFullAdmin() || isGerenteWithEdit('checklist'));
     }
 
     // =========================================================================
@@ -261,7 +388,7 @@ service cloud.firestore {
         && incoming().createdByUid == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
-        && isMaster();
+        && (isFullAdmin() || isGerenteWithEdit('payments'));
 
       allow update: if isSignedIn()
         && isValidId(paymentId)
@@ -275,22 +402,84 @@ service cloud.firestore {
           'description', 'amount', 'paidBy', 'category', 'paymentMethod',
           'paymentDate', 'status', 'receiptRef', 'notes', 'updatedAt'
         ])
-        && isMaster();
+        && (isFullAdmin() || isGerenteWithEdit('payments'));
 
-      allow delete: if isSignedIn() && isValidId(paymentId) && isMaster();
+      allow delete: if isSignedIn()
+        && isValidId(paymentId)
+        && (isFullAdmin() || isGerenteWithEdit('payments'));
+    }
+
+    // =========================================================================
+    // Collection: /inventory_meta/{metaId}
+    // =========================================================================
+    match /inventory_meta/{metaId} {
+      allow get: if isSignedIn() && isValidId(metaId) && isTeamMember();
+      allow list: if isSignedIn() && resource.data.workspaceId == 'creps-urca' && isTeamMember();
+
+      allow create: if isSignedIn()
+        && metaId == 'creps-urca'
+        && isValidInventoryMeta(incoming())
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && (isFullAdmin() || isGerenteWithEdit('inventory'));
+
+      allow update: if isSignedIn()
+        && metaId == 'creps-urca'
+        && isValidInventoryMeta(incoming())
+        && incoming().workspaceId == existing().workspaceId
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'baseDate', 'currentDate', 'updatedByUid', 'updatedByName', 'updatedAt'
+        ])
+        && (isFullAdmin() || isGerenteWithEdit('inventory'));
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // Collection: /inventory_items/{itemId}
+    // =========================================================================
+    match /inventory_items/{itemId} {
+      allow get: if isSignedIn() && isValidId(itemId) && isTeamMember();
+      allow list: if isSignedIn() && resource.data.workspaceId == 'creps-urca' && isTeamMember();
+
+      allow create: if isSignedIn()
+        && isValidId(itemId)
+        && isValidInventoryItem(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (isFullAdmin() || isGerenteWithEdit('inventory'));
+
+      allow update: if isSignedIn()
+        && isValidId(itemId)
+        && isValidInventoryItem(incoming())
+        && incoming().workspaceId == existing().workspaceId
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'category', 'unit', 'baseQty', 'currentQty', 'notes', 'sortOrder', 'updatedAt'
+        ])
+        && (isFullAdmin() || isGerenteWithEdit('inventory'));
+
+      allow delete: if isSignedIn()
+        && isValidId(itemId)
+        && (isFullAdmin() || isGerenteWithEdit('inventory'));
     }
 
     // =========================================================================
     // Collection: /audit_logs/{logId}
     // =========================================================================
     match /audit_logs/{logId} {
-      allow get: if isSignedIn() && isValidId(logId) && isMaster();
-      allow list: if isSignedIn() && resource.data.workspaceId == 'creps-urca' && isMaster();
+      allow get: if isSignedIn() && isValidId(logId) && isFullAdmin();
+      allow list: if isSignedIn() && resource.data.workspaceId == 'creps-urca' && isFullAdmin();
 
       allow create: if isSignedIn()
         && isValidId(logId)
         && isValidAuditLog(incoming())
-        && isMaster();
+        && (isFullAdmin() || isGerenteWithAnyEdit());
 
       // Strictly immutable audit trail
       allow update, delete: if false;

@@ -1,7 +1,44 @@
 export const WORKSPACE_ID = 'creps-urca' as const;
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'tiago.rodrigues2933@gmail.com' as const;
 
-export type UserRole = 'master' | 'manager';
+export type UserRole = 'socio' | 'diretor' | 'gerente';
+export type LegacyUserRole = UserRole | 'master' | 'manager';
+
+export const USER_ROLE_LABELS: Record<UserRole, string> = {
+  socio: 'Sócio',
+  diretor: 'Diretor',
+  gerente: 'Gerente',
+};
+
+export const GERENTE_VIEWABLE_TABS = [
+  'dashboard',
+  'checklist',
+  'payments',
+  'inventory',
+  'reports',
+] as const;
+export type GerenteViewableTab = (typeof GERENTE_VIEWABLE_TABS)[number];
+
+export const GERENTE_EDITABLE_TABS = ['checklist', 'payments', 'inventory'] as const;
+export type GerenteEditableTab = (typeof GERENTE_EDITABLE_TABS)[number];
+
+export const TAB_LABEL_MAP: Record<GerenteViewableTab, string> = {
+  dashboard: 'Visão Geral',
+  checklist: 'Checklist',
+  payments: 'Pagamentos',
+  inventory: 'Inventário',
+  reports: 'Relatórios',
+};
+
+export function normalizeUserRole(role: string | undefined): UserRole {
+  if (role === 'socio') return 'socio';
+  if (role === 'diretor' || role === 'master') return 'diretor';
+  return 'gerente';
+}
+
+export function isFullAdminRole(role: string | undefined): boolean {
+  return role === 'socio' || role === 'diretor' || role === 'master';
+}
 
 export const TASK_CATEGORIES = [
   'RH & Equipe',
@@ -18,9 +55,6 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 export const TASK_PRIORITIES = ['baixa', 'media', 'alta', 'urgente'] as const;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
-
-export const PAID_BY_OPTIONS = ['Tiago', 'Letícia', 'Empresa Creps Urca'] as const;
-export type PaidByOption = (typeof PAID_BY_OPTIONS)[number];
 
 export const PAYMENT_CATEGORIES = [
   'Equipamentos & PDV',
@@ -45,6 +79,20 @@ export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 export const PAYMENT_STATUSES = ['pago', 'agendado'] as const;
 export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 
+export const INVENTORY_CATEGORIES = [
+  'Proteínas',
+  'Queijos',
+  'Estoque Seco',
+  'Hortifruti',
+  'Doces',
+  'Embalagem',
+  'Outros Congelados e Resfriados',
+  'Molhos',
+  'Basicos Delivery',
+  'Polpas e Açaí',
+] as const;
+export type InventoryCategory = (typeof INVENTORY_CATEGORIES)[number];
+
 // Synchronized verbatim with firebase-blueprint.json bounds
 export const VALIDATION_LIMITS = {
   ID_REGEX: /^[a-zA-Z0-9_-]+$/,
@@ -61,6 +109,11 @@ export const VALIDATION_LIMITS = {
   PAYMENT_AMOUNT_MAX: 10000000,
   RECEIPT_REF_MAX: 120,
   NOTES_MAX: 600,
+  INVENTORY_NAME_MIN: 1,
+  INVENTORY_NAME_MAX: 120,
+  INVENTORY_UNIT_MAX: 20,
+  INVENTORY_QTY_MAX: 1000000,
+  INVENTORY_NOTES_MAX: 300,
   AUDIT_SUMMARY_MAX: 300,
 } as const;
 
@@ -69,9 +122,21 @@ export interface UserProfile {
   uid: string;
   email: string;
   displayName: string;
-  role: UserRole;
+  role: LegacyUserRole;
+  allowedTabs?: GerenteViewableTab[];
+  editableTabs?: GerenteEditableTab[];
   active: boolean;
   createdByUid: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface PartnerRecord {
+  id: string;
+  workspaceId: typeof WORKSPACE_ID;
+  uid: string;
+  displayName: string;
+  active: boolean;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -99,7 +164,7 @@ export interface TransitionPayment {
   workspaceId: typeof WORKSPACE_ID;
   description: string;
   amount: number;
-  paidBy: PaidByOption;
+  paidBy: string;
   category: PaymentCategory;
   paymentMethod: PaymentMethod;
   paymentDate: string;
@@ -113,10 +178,36 @@ export interface TransitionPayment {
   hasPendingWrites?: boolean;
 }
 
+export interface InventoryMeta {
+  id: string;
+  workspaceId: typeof WORKSPACE_ID;
+  baseDate: string;
+  currentDate: string;
+  updatedByUid: string;
+  updatedByName: string;
+  updatedAt?: unknown;
+}
+
+export interface InventoryItem {
+  id: string;
+  workspaceId: typeof WORKSPACE_ID;
+  name: string;
+  category: InventoryCategory;
+  unit: string;
+  baseQty: number;
+  currentQty: number;
+  notes: string;
+  sortOrder: number;
+  createdByUid: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  hasPendingWrites?: boolean;
+}
+
 export interface AuditLog {
   id: string;
   workspaceId: typeof WORKSPACE_ID;
-  entityType: 'task' | 'payment' | 'user' | 'system';
+  entityType: 'task' | 'payment' | 'user' | 'inventory' | 'partner' | 'system';
   entityId: string;
   action: 'create' | 'update' | 'delete';
   summary: string;
@@ -174,7 +265,7 @@ export function validateTaskPayload(input: {
 export function validatePaymentPayload(input: {
   description: string;
   amount: number;
-  paidBy: PaidByOption;
+  paidBy: string;
   category: PaymentCategory;
   paymentMethod: PaymentMethod;
   paymentDate: string;
@@ -183,6 +274,7 @@ export function validatePaymentPayload(input: {
   notes: string;
 }): string | null {
   const desc = input.description.trim();
+  const paidBy = input.paidBy.trim();
   if (desc.length < VALIDATION_LIMITS.PAYMENT_DESC_MIN || desc.length > VALIDATION_LIMITS.PAYMENT_DESC_MAX) {
     return `A descrição do pagamento deve ter entre ${VALIDATION_LIMITS.PAYMENT_DESC_MIN} e ${VALIDATION_LIMITS.PAYMENT_DESC_MAX} caracteres.`;
   }
@@ -192,7 +284,9 @@ export function validatePaymentPayload(input: {
   if (!VALIDATION_LIMITS.ISO_DATE_REGEX.test(input.paymentDate)) {
     return 'Informe uma data de pagamento válida.';
   }
-  if (!PAID_BY_OPTIONS.includes(input.paidBy)) return 'Pagador inválido.';
+  if (paidBy.length < VALIDATION_LIMITS.DISPLAY_NAME_MIN || paidBy.length > VALIDATION_LIMITS.DISPLAY_NAME_MAX) {
+    return `Informe um pagador válido entre ${VALIDATION_LIMITS.DISPLAY_NAME_MIN} e ${VALIDATION_LIMITS.DISPLAY_NAME_MAX} caracteres.`;
+  }
   if (!PAYMENT_CATEGORIES.includes(input.category)) return 'Categoria financeira inválida.';
   if (!PAYMENT_METHODS.includes(input.paymentMethod)) return 'Meio de pagamento inválido.';
   if (!PAYMENT_STATUSES.includes(input.status)) return 'Status de pagamento inválido.';
@@ -201,6 +295,35 @@ export function validatePaymentPayload(input: {
   }
   if (input.notes.trim().length > VALIDATION_LIMITS.NOTES_MAX) {
     return `Observações devem ter no máximo ${VALIDATION_LIMITS.NOTES_MAX} caracteres.`;
+  }
+  return null;
+}
+
+export function validateInventoryItemPayload(input: {
+  name: string;
+  category: InventoryCategory;
+  unit: string;
+  baseQty: number;
+  currentQty: number;
+  notes: string;
+}): string | null {
+  const name = input.name.trim();
+  const unit = input.unit.trim();
+  if (name.length < VALIDATION_LIMITS.INVENTORY_NAME_MIN || name.length > VALIDATION_LIMITS.INVENTORY_NAME_MAX) {
+    return `O nome do item deve ter entre ${VALIDATION_LIMITS.INVENTORY_NAME_MIN} e ${VALIDATION_LIMITS.INVENTORY_NAME_MAX} caracteres.`;
+  }
+  if (!INVENTORY_CATEGORIES.includes(input.category)) return 'Categoria de inventário inválida.';
+  if (unit.length < 1 || unit.length > VALIDATION_LIMITS.INVENTORY_UNIT_MAX) {
+    return `A unidade deve ter entre 1 e ${VALIDATION_LIMITS.INVENTORY_UNIT_MAX} caracteres.`;
+  }
+  if (!Number.isFinite(input.baseQty) || input.baseQty < 0 || input.baseQty > VALIDATION_LIMITS.INVENTORY_QTY_MAX) {
+    return 'Informe uma quantidade base válida (>= 0).';
+  }
+  if (!Number.isFinite(input.currentQty) || input.currentQty < 0 || input.currentQty > VALIDATION_LIMITS.INVENTORY_QTY_MAX) {
+    return 'Informe uma quantidade hoje válida (>= 0).';
+  }
+  if (input.notes.trim().length > VALIDATION_LIMITS.INVENTORY_NOTES_MAX) {
+    return `Observação deve ter no máximo ${VALIDATION_LIMITS.INVENTORY_NOTES_MAX} caracteres.`;
   }
   return null;
 }

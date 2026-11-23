@@ -4,12 +4,11 @@ import {
   formatCurrencyBRL,
   formatDateBR,
   getTodayIsoDate,
-  PAID_BY_OPTIONS,
   PAYMENT_CATEGORIES,
   PAYMENT_METHODS,
   PAYMENT_STATUSES,
   validatePaymentPayload,
-  type PaidByOption,
+  type PartnerRecord,
   type PaymentCategory,
   type PaymentMethod,
   type PaymentStatus,
@@ -19,12 +18,13 @@ import type { ConfirmDialogState } from './ConfirmActionModal';
 
 interface PaymentsViewProps {
   payments: TransitionPayment[];
+  partners: PartnerRecord[];
   loading: boolean;
-  isMaster: boolean;
+  canEdit: boolean;
   onCreatePayment: (input: {
     description: string;
     amount: number;
-    paidBy: PaidByOption;
+    paidBy: string;
     category: PaymentCategory;
     paymentMethod: PaymentMethod;
     paymentDate: string;
@@ -37,7 +37,7 @@ interface PaymentsViewProps {
     updates: {
       description: string;
       amount: number;
-      paidBy: PaidByOption;
+      paidBy: string;
       category: PaymentCategory;
       paymentMethod: PaymentMethod;
       paymentDate: string;
@@ -54,8 +54,9 @@ interface PaymentsViewProps {
 
 export const PaymentsView: React.FC<PaymentsViewProps> = ({
   payments,
+  partners,
   loading,
-  isMaster,
+  canEdit,
   onCreatePayment,
   onUpdatePayment,
   onDeletePayment,
@@ -63,7 +64,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
   externalOpenCreate,
   onConsumeExternalOpenCreate,
 }) => {
-  const [payerFilter, setPayerFilter] = useState<'all' | PaidByOption>('all');
+  const [payerFilter, setPayerFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | PaymentCategory>('all');
   const [monthFilter, setMonthFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
@@ -71,9 +72,23 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
   const [modalOpen, setModalOpen] = useState(false);
   const [editingPayment, setEditingPayment] = useState<TransitionPayment | null>(null);
 
+  const payerOptions = useMemo(() => {
+    const set = new Set<string>();
+    partners
+      .filter((p) => p.active)
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'pt-BR'))
+      .forEach((p) => set.add(p.displayName));
+    set.add('Empresa Creps Urca');
+    payments.forEach((p) => {
+      if (p.paidBy.trim()) set.add(p.paidBy.trim());
+    });
+    return Array.from(set);
+  }, [partners, payments]);
+
   const [description, setDescription] = useState('');
   const [amountInput, setAmountInput] = useState('');
-  const [paidBy, setPaidBy] = useState<PaidByOption>('Tiago');
+  const [paidBy, setPaidBy] = useState<string>(payerOptions[0] || 'Empresa Creps Urca');
+  const [customPaidBy, setCustomPaidBy] = useState('');
   const [category, setCategory] = useState<PaymentCategory>('Equipamentos & PDV');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('PIX');
   const [paymentDate, setPaymentDate] = useState(getTodayIsoDate());
@@ -83,11 +98,11 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
   const [formError, setFormError] = useState<string | null>(null);
 
   React.useEffect(() => {
-    if (externalOpenCreate && isMaster) {
+    if (externalOpenCreate && canEdit) {
       openCreateModal();
       onConsumeExternalOpenCreate?.();
     }
-  }, [externalOpenCreate, isMaster]);
+  }, [externalOpenCreate, canEdit]);
 
   const availableMonths = useMemo(() => {
     const set = new Set<string>();
@@ -108,7 +123,8 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
           return (
             p.description.toLowerCase().includes(q) ||
             p.receiptRef.toLowerCase().includes(q) ||
-            p.notes.toLowerCase().includes(q)
+            p.notes.toLowerCase().includes(q) ||
+            p.paidBy.toLowerCase().includes(q)
           );
         }
         return true;
@@ -116,29 +132,53 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
       .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate));
   }, [payments, payerFilter, categoryFilter, monthFilter, searchTerm]);
 
-  const totals = useMemo(() => {
-    const tiago = payments.filter((p) => p.paidBy === 'Tiago').reduce((s, p) => s + p.amount, 0);
-    const leticia = payments
-      .filter((p) => p.paidBy === 'Letícia')
-      .reduce((s, p) => s + p.amount, 0);
-    const empresa = payments
+  const summaryCards = useMemo(() => {
+    const total = payments.reduce((s, p) => s + p.amount, 0);
+    const activePartnerNames = partners
+      .filter((p) => p.active)
+      .map((p) => p.displayName);
+
+    const cards: Array<{ label: string; amount: number; accent: string }> = [
+      {
+        label: 'Total Geral Acumulado',
+        amount: total,
+        accent: 'text-slate-900 dark:text-slate-50',
+      },
+    ];
+
+    activePartnerNames.forEach((name, idx) => {
+      const amt = payments
+        .filter((p) => p.paidBy === name)
+        .reduce((s, p) => s + p.amount, 0);
+      cards.push({
+        label: `Pago por ${name}`,
+        amount: amt,
+        accent:
+          idx % 2 === 0
+            ? 'text-teal-700 dark:text-teal-400'
+            : 'text-sky-700 dark:text-sky-400',
+      });
+    });
+
+    const empresaAmt = payments
       .filter((p) => p.paidBy === 'Empresa Creps Urca')
       .reduce((s, p) => s + p.amount, 0);
+    cards.push({
+      label: 'Conta Creps Urca',
+      amount: empresaAmt,
+      accent: 'text-slate-900 dark:text-slate-50',
+    });
+
     const filteredTotal = filteredPayments.reduce((s, p) => s + p.amount, 0);
-    return {
-      total: tiago + leticia + empresa,
-      tiago,
-      leticia,
-      empresa,
-      filteredTotal,
-    };
-  }, [payments, filteredPayments]);
+    return { cards, filteredTotal };
+  }, [payments, partners, filteredPayments]);
 
   function openCreateModal() {
     setEditingPayment(null);
     setDescription('');
     setAmountInput('');
-    setPaidBy('Tiago');
+    setPaidBy(payerOptions[0] || 'Empresa Creps Urca');
+    setCustomPaidBy('');
     setCategory('Equipamentos & PDV');
     setPaymentMethod('PIX');
     setPaymentDate(getTodayIsoDate());
@@ -153,7 +193,13 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
     setEditingPayment(payment);
     setDescription(payment.description);
     setAmountInput(String(payment.amount));
-    setPaidBy(payment.paidBy);
+    if (payerOptions.includes(payment.paidBy)) {
+      setPaidBy(payment.paidBy);
+      setCustomPaidBy('');
+    } else {
+      setPaidBy('__custom__');
+      setCustomPaidBy(payment.paidBy);
+    }
     setCategory(payment.category);
     setPaymentMethod(payment.paymentMethod);
     setPaymentDate(payment.paymentDate);
@@ -167,10 +213,12 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const parsedAmount = Number(amountInput.replace(',', '.'));
+    const resolvedPaidBy = paidBy === '__custom__' ? customPaidBy.trim() : paidBy;
+
     const payload = {
       description,
       amount: parsedAmount,
-      paidBy,
+      paidBy: resolvedPaidBy,
       category,
       paymentMethod,
       paymentDate,
@@ -193,7 +241,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
         details: [
           { label: 'Descrição', value: description.trim() },
           { label: 'Valor', value: formatCurrencyBRL(parsedAmount) },
-          { label: 'Pago por', value: paidBy },
+          { label: 'Pago por', value: resolvedPaidBy },
           { label: 'Data', value: formatDateBR(paymentDate) },
         ],
         confirmLabel: 'Confirmar Alteração',
@@ -211,7 +259,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
         details: [
           { label: 'Descrição', value: description.trim() },
           { label: 'Valor', value: formatCurrencyBRL(parsedAmount) },
-          { label: 'Pago por', value: paidBy },
+          { label: 'Pago por', value: resolvedPaidBy },
           { label: 'Categoria', value: category },
         ],
         confirmLabel: 'Confirmar Lançamento',
@@ -225,7 +273,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
   };
 
   const handleDelete = (payment: TransitionPayment) => {
-    if (!isMaster) return;
+    if (!canEdit) return;
     requestConfirmation({
       title: 'Confirmar Exclusão de Pagamento',
       description:
@@ -245,44 +293,31 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {!isMaster && (
+      {!canEdit && (
         <div className="px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-900 text-xs text-slate-600 dark:text-slate-300">
-          <strong>Modo Gerente de Loja (Somente Leitura):</strong> visualização do histórico de pagamentos da implantação. Lançamentos financeiros são exclusivos dos Administradores Master.
+          <strong>Modo Somente Leitura (Gerente):</strong> visualização do histórico de pagamentos da implantação. Inclusões e edições financeiras exigem permissão liberada por um Sócio ou Diretor.
         </div>
       )}
 
       {/* Partner Summary Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
-          <p className="text-xs text-slate-500 dark:text-slate-400">Total Geral Acumulado</p>
-          <p className="font-mono tabular-nums text-xl font-bold text-slate-900 dark:text-slate-50 mt-1">
-            {formatCurrencyBRL(totals.total)}
-          </p>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
-          <p className="text-xs text-slate-500 dark:text-slate-400">Pago por Tiago</p>
-          <p className="font-mono tabular-nums text-xl font-bold text-teal-700 dark:text-teal-400 mt-1">
-            {formatCurrencyBRL(totals.tiago)}
-          </p>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
-          <p className="text-xs text-slate-500 dark:text-slate-400">Pago por Letícia</p>
-          <p className="font-mono tabular-nums text-xl font-bold text-sky-700 dark:text-sky-400 mt-1">
-            {formatCurrencyBRL(totals.leticia)}
-          </p>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
-          <p className="text-xs text-slate-500 dark:text-slate-400">Conta Creps Urca</p>
-          <p className="font-mono tabular-nums text-xl font-bold text-slate-900 dark:text-slate-50 mt-1">
-            {formatCurrencyBRL(totals.empresa)}
-          </p>
-        </div>
+        {summaryCards.cards.map((card) => (
+          <div
+            key={card.label}
+            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4"
+          >
+            <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{card.label}</p>
+            <p className={`font-mono tabular-nums text-xl font-bold mt-1 ${card.accent}`}>
+              {formatCurrencyBRL(card.amount)}
+            </p>
+          </div>
+        ))}
       </div>
 
       {/* Filter & Action Toolbar */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg">
-          {(['all', ...PAID_BY_OPTIONS] as const).map((payer) => (
+          {(['all', ...payerOptions] as const).map((payer) => (
             <button
               key={payer}
               type="button"
@@ -298,7 +333,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
           ))}
         </div>
 
-        {isMaster && (
+        {canEdit && (
           <button
             type="button"
             onClick={openCreateModal}
@@ -317,7 +352,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Buscar descrição, NF ou observação..."
+            placeholder="Buscar descrição, NF ou pagador..."
             className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
           />
         </div>
@@ -378,7 +413,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                   <th className="py-3 px-4">Forma</th>
                   <th className="py-3 px-4">Status</th>
                   <th className="py-3 px-4 text-right">Valor</th>
-                  {isMaster && <th className="py-3 px-4 text-right">Ações</th>}
+                  {canEdit && <th className="py-3 px-4 text-right">Ações</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-sm">
@@ -437,7 +472,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                     <td className="py-3.5 px-4 whitespace-nowrap text-right font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100">
                       {formatCurrencyBRL(payment.amount)}
                     </td>
-                    {isMaster && (
+                    {canEdit && (
                       <td className="py-3.5 px-4 whitespace-nowrap text-right">
                         <div className="inline-flex items-center gap-1">
                           <button
@@ -468,9 +503,9 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                     Subtotal do filtro ({filteredPayments.length} itens):
                   </td>
                   <td className="py-3 px-4 text-right font-mono tabular-nums">
-                    {formatCurrencyBRL(totals.filteredTotal)}
+                    {formatCurrencyBRL(summaryCards.filteredTotal)}
                   </td>
-                  {isMaster && <td />}
+                  {canEdit && <td />}
                 </tr>
               </tfoot>
             </table>
@@ -479,7 +514,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
       )}
 
       {/* Modal */}
-      {modalOpen && isMaster && (
+      {modalOpen && canEdit && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-[2px]"
           role="dialog"
@@ -559,14 +594,15 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                   </label>
                   <select
                     value={paidBy}
-                    onChange={(e) => setPaidBy(e.target.value as PaidByOption)}
+                    onChange={(e) => setPaidBy(e.target.value)}
                     className="w-full px-3 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
                   >
-                    {PAID_BY_OPTIONS.map((p) => (
+                    {payerOptions.map((p) => (
                       <option key={p} value={p}>
                         {p}
                       </option>
                     ))}
+                    <option value="__custom__">Outro pagador...</option>
                   </select>
                 </div>
 
@@ -587,6 +623,23 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                   </select>
                 </div>
               </div>
+
+              {paidBy === '__custom__' && (
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                    Nome do pagador *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={80}
+                    value={customPaidBy}
+                    onChange={(e) => setCustomPaidBy(e.target.value)}
+                    placeholder="Informe o nome do pagador"
+                    className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
+                  />
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
@@ -647,7 +700,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                   maxLength={600}
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Detalhes para acerto de contas entre Tiago e Letícia..."
+                  placeholder="Detalhes para acerto de contas entre os sócios..."
                   className="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:border-teal-600 focus:outline-none"
                 />
               </div>

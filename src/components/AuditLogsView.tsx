@@ -10,7 +10,9 @@ interface AuditLogsViewProps {
 const ENTITY_LABELS: Record<AuditLog['entityType'], string> = {
   task: 'Checklist',
   payment: 'Pagamento',
+  inventory: 'Inventário',
   user: 'Usuário',
+  partner: 'Sócio',
   system: 'Sistema',
 };
 
@@ -95,7 +97,9 @@ export const AuditLogsView: React.FC<AuditLogsViewProps> = ({ logs, loading }) =
           <option value="all">Todas as coleções</option>
           <option value="task">Checklist</option>
           <option value="payment">Pagamentos</option>
+          <option value="inventory">Inventário</option>
           <option value="user">Usuários</option>
+          <option value="partner">Sócios</option>
           <option value="system">Sistema</option>
         </select>
 
@@ -124,7 +128,7 @@ export const AuditLogsView: React.FC<AuditLogsViewProps> = ({ logs, loading }) =
             Nenhum evento de auditoria encontrado
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            Qualquer alteração feita por um Administrador Master aparecerá aqui em tempo real.
+            Qualquer alteração feita por um Sócio, Diretor ou Gerente autorizado aparecerá aqui em tempo real.
           </p>
         </div>
       ) : (

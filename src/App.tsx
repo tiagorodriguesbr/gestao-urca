@@ -28,6 +28,7 @@ import {
   MailCheck,
   Menu,
   Moon,
+  Package,
   RefreshCw,
   Sun,
   Users,
@@ -36,14 +37,19 @@ import {
 } from 'lucide-react';
 import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
 import {
+  createInventoryItemWithAudit,
   createPaymentWithAudit,
   createTaskWithAudit,
   createUserProfileWithAudit,
+  deleteInventoryItemWithAudit,
   deletePaymentWithAudit,
   deleteTaskWithAudit,
   deleteUserProfileWithAudit,
   ensureBootstrappedAdminProfile,
   importStarterChecklistPack,
+  saveInventoryBatchCountsWithAudit,
+  saveInventoryMetaWithAudit,
+  seedRestaurantInventoryWithAudit,
   updatePaymentWithAudit,
   updateTaskWithAudit,
   updateUserProfileWithAudit,
@@ -57,20 +63,21 @@ import {
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   formatCurrencyBRL,
+  GERENTE_VIEWABLE_TABS,
+  isFullAdminRole,
+  normalizeUserRole,
+  USER_ROLE_LABELS,
   WORKSPACE_ID,
   type AuditLog,
-  type PaidByOption,
-  type PaymentCategory,
-  type PaymentMethod,
-  type PaymentStatus,
+  type GerenteEditableTab,
+  type GerenteViewableTab,
+  type InventoryItem,
+  type InventoryMeta,
+  type PartnerRecord,
   type RealtimeAlert,
-  type TaskCategory,
-  type TaskPriority,
-  type TaskStatus,
   type TransitionPayment,
   type TransitionTask,
   type UserProfile,
-  type UserRole,
 } from './types/domain';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ConfirmActionModal, type ConfirmDialogState } from './components/ConfirmActionModal';
@@ -78,16 +85,25 @@ import { LoginView } from './components/LoginView';
 import { DashboardView } from './components/DashboardView';
 import { ChecklistView } from './components/ChecklistView';
 import { PaymentsView } from './components/PaymentsView';
+import { InventoryView } from './components/InventoryView';
 import { ReportsView } from './components/ReportsView';
 import { AuditLogsView } from './components/AuditLogsView';
 import { TeamUsersView } from './components/TeamUsersView';
 
-type AppTab = 'dashboard' | 'checklist' | 'payments' | 'reports' | 'audit' | 'team';
+type AppTab =
+  | 'dashboard'
+  | 'checklist'
+  | 'payments'
+  | 'inventory'
+  | 'reports'
+  | 'audit'
+  | 'team';
 
 const TAB_TITLES: Record<AppTab, string> = {
   dashboard: 'Visão Geral',
   checklist: 'Checklist de Transição',
   payments: 'Pagamentos Realizados',
+  inventory: 'Inventário de Estoque',
   reports: 'Relatórios & Exportação',
   audit: 'Logs de Auditoria',
   team: 'Equipe & Acessos',
@@ -148,6 +164,10 @@ function MainShell() {
   const [tasksLoading, setTasksLoading] = useState(true);
   const [payments, setPayments] = useState<TransitionPayment[]>([]);
   const [paymentsLoading, setPaymentsLoading] = useState(true);
+  const [partners, setPartners] = useState<PartnerRecord[]>([]);
+  const [inventoryMeta, setInventoryMeta] = useState<InventoryMeta | null>(null);
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+  const [inventoryLoading, setInventoryLoading] = useState(true);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [auditLoading, setAuditLoading] = useState(true);
   const [teamUsers, setTeamUsers] = useState<UserProfile[]>([]);
@@ -222,7 +242,7 @@ function MainShell() {
         const bootstrapped = await ensureBootstrappedAdminProfile(fbUser);
         if (!bootstrapped) {
           setAccessDeniedMessage(
-            'Esta conta não possui acesso autorizado ao workspace da Creps Urca. Solicite cadastro ao Administrador Master.'
+            'Esta conta não possui acesso autorizado ao workspace da Creps Urca. Solicite cadastro a um Sócio ou Diretor.'
           );
           await signOut(auth);
           setAuthReady(true);
@@ -230,7 +250,7 @@ function MainShell() {
         }
         if (!bootstrapped.active) {
           setAccessDeniedMessage(
-            'Seu acesso está temporariamente suspenso. Contate o Administrador Master.'
+            'Seu acesso está temporariamente suspenso. Contate um Sócio ou Diretor.'
           );
           await signOut(auth);
           setAuthReady(true);
@@ -248,7 +268,7 @@ function MainShell() {
             }
             const data = snap.data() as Omit<UserProfile, 'id'>;
             if (!data.active) {
-              setAccessDeniedMessage('Seu acesso foi desativado pelo Administrador Master.');
+              setAccessDeniedMessage('Seu acesso foi desativado por um Sócio ou Diretor.');
               void signOut(auth);
               return;
             }
@@ -268,27 +288,66 @@ function MainShell() {
     };
   }, []);
 
-  const isMaster = useMemo(() => {
-    if (!userProfile || !firebaseUser) return false;
-    if (userProfile.role === 'master' && userProfile.active) return true;
+  const normalizedRole = useMemo(
+    () => normalizeUserRole(userProfile?.role),
+    [userProfile?.role]
+  );
+
+  const isFullAdmin = useMemo(() => {
+    if (!userProfile || !firebaseUser || !userProfile.active) return false;
+    if (isFullAdminRole(userProfile.role)) return true;
     return (
       firebaseUser.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase() &&
       firebaseUser.emailVerified
     );
   }, [userProfile, firebaseUser]);
 
-  // Redirect manager away from restricted tabs if role changes live
-  useEffect(() => {
-    if (!isMaster && (activeTab === 'audit' || activeTab === 'team')) {
-      setActiveTab('dashboard');
+  const gerenteAllowedTabs = useMemo<GerenteViewableTab[]>(() => {
+    if (isFullAdmin) return [...GERENTE_VIEWABLE_TABS];
+    if (userProfile?.allowedTabs && userProfile.allowedTabs.length > 0) {
+      return userProfile.allowedTabs;
     }
-  }, [isMaster, activeTab]);
+    if (userProfile?.role === 'manager') {
+      return ['dashboard', 'checklist', 'payments', 'reports'];
+    }
+    return ['checklist', 'inventory'];
+  }, [isFullAdmin, userProfile]);
 
-  // Firestore Real-time Listeners (tasks, payments, audit_logs, users)
+  const canViewTab = useCallback(
+    (tab: AppTab): boolean => {
+      if (isFullAdmin) return true;
+      if (tab === 'audit' || tab === 'team') return false;
+      return gerenteAllowedTabs.includes(tab);
+    },
+    [isFullAdmin, gerenteAllowedTabs]
+  );
+
+  const canEditTab = useCallback(
+    (tab: GerenteEditableTab): boolean => {
+      if (isFullAdmin) return true;
+      if (normalizedRole !== 'gerente') return false;
+      return Boolean(userProfile?.editableTabs?.includes(tab));
+    },
+    [isFullAdmin, normalizedRole, userProfile?.editableTabs]
+  );
+
+  // Redirect away from disallowed tabs if permissions change live
+  useEffect(() => {
+    if (!userProfile) return;
+    if (!canViewTab(activeTab)) {
+      const firstAllowed = GERENTE_VIEWABLE_TABS.find((t) => canViewTab(t));
+      if (firstAllowed) setActiveTab(firstAllowed);
+    }
+  }, [userProfile, activeTab, canViewTab]);
+
+  // Firestore Real-time Listeners
   useEffect(() => {
     if (!authReady || !firebaseUser || !userProfile?.active) {
       setTasks([]);
       setPayments([]);
+      setPartners([]);
+      setInventoryMeta(null);
+      setInventoryItems([]);
       setAuditLogs([]);
       setTeamUsers([]);
       return;
@@ -391,10 +450,61 @@ function MainShell() {
       (error) => handleFirestoreError(error, OperationType.LIST, 'payments')
     );
 
+    const partnersQuery = query(
+      collection(db, 'partners'),
+      where('workspaceId', '==', WORKSPACE_ID)
+    );
+    const unsubPartners = onSnapshot(
+      partnersQuery,
+      (snapshot) => {
+        const list: PartnerRecord[] = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<PartnerRecord, 'id'>),
+        }));
+        setPartners(list);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, 'partners')
+    );
+
+    const unsubInventoryMeta = onSnapshot(
+      doc(db, 'inventory_meta', WORKSPACE_ID),
+      (snap) => {
+        if (snap.exists()) {
+          setInventoryMeta({
+            id: snap.id,
+            ...(snap.data() as Omit<InventoryMeta, 'id'>),
+          });
+        } else {
+          setInventoryMeta(null);
+        }
+      },
+      (error) => handleFirestoreError(error, OperationType.GET, `inventory_meta/${WORKSPACE_ID}`)
+    );
+
+    setInventoryLoading(true);
+    const inventoryQuery = query(
+      collection(db, 'inventory_items'),
+      where('workspaceId', '==', WORKSPACE_ID)
+    );
+    const unsubInventoryItems = onSnapshot(
+      inventoryQuery,
+      { includeMetadataChanges: true },
+      (snapshot) => {
+        const list: InventoryItem[] = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<InventoryItem, 'id'>),
+          hasPendingWrites: d.metadata.hasPendingWrites,
+        }));
+        setInventoryItems(list);
+        setInventoryLoading(false);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, 'inventory_items')
+    );
+
     let unsubAudit: (() => void) | null = null;
     let unsubUsers: (() => void) | null = null;
 
-    if (isMaster) {
+    if (isFullAdmin) {
       setAuditLoading(true);
       const auditQuery = query(
         collection(db, 'audit_logs'),
@@ -449,10 +559,13 @@ function MainShell() {
     return () => {
       unsubTasks();
       unsubPayments();
+      unsubPartners();
+      unsubInventoryMeta();
+      unsubInventoryItems();
       if (unsubAudit) unsubAudit();
       if (unsubUsers) unsubUsers();
     };
-  }, [authReady, firebaseUser, userProfile?.active, isMaster, pushAlert]);
+  }, [authReady, firebaseUser, userProfile?.active, isFullAdmin, pushAlert]);
 
   const urgentTasksCount = useMemo(
     () => tasks.filter((t) => isUrgentTask(t)).length,
@@ -591,7 +704,7 @@ function MainShell() {
             </h2>
           </div>
           <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-            Para proteger a conta principal do Administrador Master, enviamos um link de confirmação para{' '}
+            Para proteger a conta principal do Diretor, enviamos um link de confirmação para{' '}
             <strong className="font-mono text-xs">{firebaseUser.email}</strong>. Clique no link do e-mail e depois aperte o botão abaixo.
           </p>
           {verifyMessage && (
@@ -644,17 +757,19 @@ function MainShell() {
     id: AppTab;
     label: string;
     icon: React.ComponentType<{ className?: string }>;
-    masterOnly?: boolean;
   }> = [
     { id: 'dashboard', label: 'Visão Geral', icon: LayoutDashboard },
     { id: 'checklist', label: 'Checklist', icon: CheckSquare },
     { id: 'payments', label: 'Pagamentos', icon: CreditCard },
+    { id: 'inventory', label: 'Inventário', icon: Package },
     { id: 'reports', label: 'Relatórios', icon: BarChart3 },
-    { id: 'audit', label: 'Auditoria', icon: History, masterOnly: true },
-    { id: 'team', label: 'Equipe', icon: Users, masterOnly: true },
+    { id: 'audit', label: 'Auditoria', icon: History },
+    { id: 'team', label: 'Equipe', icon: Users },
   ];
 
-  const visibleNavItems = navItems.filter((item) => !item.masterOnly || isMaster);
+  const visibleNavItems = navItems.filter((item) => canViewTab(item.id));
+  const showQuickPaymentBtn = activeTab === 'payments' && canEditTab('payments');
+  const showQuickTaskBtn = activeTab !== 'payments' && canEditTab('checklist');
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex">
@@ -734,7 +849,7 @@ function MainShell() {
               {userProfile.displayName}
             </p>
             <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-              {isMaster ? 'Administrador Master' : 'Gerente de Loja'}
+              {USER_ROLE_LABELS[normalizedRole]}
             </p>
           </div>
 
@@ -817,11 +932,11 @@ function MainShell() {
               {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
 
-            {isMaster && (
+            {(showQuickPaymentBtn || showQuickTaskBtn) && (
               <button
                 type="button"
                 onClick={() => {
-                  if (activeTab === 'payments') {
+                  if (showQuickPaymentBtn) {
                     setTriggerCreatePayment(true);
                   } else {
                     setActiveTab('checklist');
@@ -830,7 +945,7 @@ function MainShell() {
                 }}
                 className="hidden sm:inline-flex items-center px-3.5 py-2 rounded-lg bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-700 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0"
               >
-                {activeTab === 'payments' ? 'Novo Pagamento' : 'Nova Atividade'}
+                {showQuickPaymentBtn ? 'Novo Pagamento' : 'Nova Atividade'}
               </button>
             )}
           </div>
@@ -904,16 +1019,14 @@ function MainShell() {
 
         {/* Viewport Content */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-          {activeTab === 'dashboard' && (
+          {activeTab === 'dashboard' && canViewTab('dashboard') && (
             <DashboardView
               tasks={tasks}
               payments={payments}
-              isMaster={isMaster}
+              partners={partners}
+              isFullAdmin={isFullAdmin}
+              canEditPayments={canEditTab('payments')}
               onNavigate={(tab) => setActiveTab(tab)}
-              onOpenNewTask={() => {
-                setActiveTab('checklist');
-                setTriggerCreateTask(true);
-              }}
               onOpenNewPayment={() => {
                 setActiveTab('payments');
                 setTriggerCreatePayment(true);
@@ -921,11 +1034,11 @@ function MainShell() {
             />
           )}
 
-          {activeTab === 'checklist' && (
+          {activeTab === 'checklist' && canViewTab('checklist') && (
             <ChecklistView
               tasks={tasks}
               loading={tasksLoading}
-              isMaster={isMaster}
+              canEdit={canEditTab('checklist')}
               onCreateTask={async (input) => {
                 await createTaskWithAudit(actor, input);
               }}
@@ -944,11 +1057,12 @@ function MainShell() {
             />
           )}
 
-          {activeTab === 'payments' && (
+          {activeTab === 'payments' && canViewTab('payments') && (
             <PaymentsView
               payments={payments}
+              partners={partners}
               loading={paymentsLoading}
-              isMaster={isMaster}
+              canEdit={canEditTab('payments')}
               onCreatePayment={async (input) => {
                 await createPaymentWithAudit(actor, input);
               }}
@@ -964,20 +1078,46 @@ function MainShell() {
             />
           )}
 
-          {activeTab === 'reports' && (
-            <ReportsView
-              tasks={tasks}
-              payments={payments}
-              auditLogs={auditLogs}
-              isMaster={isMaster}
+          {activeTab === 'inventory' && canViewTab('inventory') && (
+            <InventoryView
+              items={inventoryItems}
+              meta={inventoryMeta}
+              loading={inventoryLoading}
+              canEdit={canEditTab('inventory')}
+              onSaveMeta={async (input) => {
+                await saveInventoryMetaWithAudit(actor, input);
+              }}
+              onSeedCatalog={async () => {
+                await seedRestaurantInventoryWithAudit(actor);
+              }}
+              onSaveBatchCounts={async (updates) => {
+                await saveInventoryBatchCountsWithAudit(actor, updates);
+              }}
+              onCreateItem={async (input) => {
+                await createInventoryItemWithAudit(actor, input);
+              }}
+              onDeleteItem={async (item) => {
+                await deleteInventoryItemWithAudit(actor, item);
+              }}
+              requestConfirmation={requestConfirmation}
             />
           )}
 
-          {activeTab === 'audit' && isMaster && (
+          {activeTab === 'reports' && canViewTab('reports') && (
+            <ReportsView
+              tasks={tasks}
+              payments={payments}
+              partners={partners}
+              auditLogs={auditLogs}
+              isFullAdmin={isFullAdmin}
+            />
+          )}
+
+          {activeTab === 'audit' && isFullAdmin && (
             <AuditLogsView logs={auditLogs} loading={auditLoading} />
           )}
 
-          {activeTab === 'team' && isMaster && (
+          {activeTab === 'team' && isFullAdmin && (
             <TeamUsersView
               users={teamUsers}
               currentUserUid={firebaseUser.uid}

@@ -14,6 +14,7 @@ import {
   formatCurrencyBRL,
   TASK_CATEGORIES,
   type AuditLog,
+  type PartnerRecord,
   type TransitionPayment,
   type TransitionTask,
 } from '../types/domain';
@@ -22,15 +23,19 @@ import { exportMonthlyPdf, exportToExcel } from '../lib/exportUtils';
 interface ReportsViewProps {
   tasks: TransitionTask[];
   payments: TransitionPayment[];
+  partners: PartnerRecord[];
   auditLogs: AuditLog[];
-  isMaster: boolean;
+  isFullAdmin: boolean;
 }
+
+const SERIES_COLORS = ['#0f766e', '#0284c7', '#d97706', '#475569', '#059669', '#64748b'];
 
 export const ReportsView: React.FC<ReportsViewProps> = ({
   tasks,
   payments,
+  partners,
   auditLogs,
-  isMaster,
+  isFullAdmin,
 }) => {
   const [selectedMonth, setSelectedMonth] = useState<string>('all');
   const [exportingPdf, setExportingPdf] = useState(false);
@@ -57,21 +62,42 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     return tasks.filter((t) => t.dueDate.startsWith(selectedMonth));
   }, [tasks, selectedMonth]);
 
+  const activePartnerNames = useMemo(() => {
+    return partners
+      .filter((p) => p.active)
+      .map((p) => p.displayName)
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [partners]);
+
+  const chartSeriesKeys = useMemo(() => {
+    const set = new Set<string>(activePartnerNames);
+    scopedPayments.forEach((p) => {
+      if (p.paidBy.trim()) set.add(p.paidBy.trim());
+    });
+    if (set.size === 0) set.add('Empresa Creps Urca');
+    return Array.from(set);
+  }, [activePartnerNames, scopedPayments]);
+
   const monthlyChartData = useMemo(() => {
-    const map = new Map<
-      string,
-      { month: string; Tiago: number; Leticia: number; Empresa: number }
-    >();
+    const map = new Map<string, Record<string, string | number>>();
     for (const p of scopedPayments) {
       const ym = p.paymentDate.slice(0, 7);
-      const entry = map.get(ym) || { month: ym, Tiago: 0, Leticia: 0, Empresa: 0 };
-      if (p.paidBy === 'Tiago') entry.Tiago += p.amount;
-      else if (p.paidBy === 'Letícia') entry.Leticia += p.amount;
-      else entry.Empresa += p.amount;
+      const entry =
+        map.get(ym) ||
+        chartSeriesKeys.reduce<Record<string, string | number>>(
+          (acc, key) => {
+            acc[key] = 0;
+            return acc;
+          },
+          { month: ym }
+        );
+      entry[p.paidBy] = Number(entry[p.paidBy] || 0) + p.amount;
       map.set(ym, entry);
     }
-    return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
-  }, [scopedPayments]);
+    return Array.from(map.values()).sort((a, b) =>
+      String(a.month).localeCompare(String(b.month))
+    );
+  }, [scopedPayments, chartSeriesKeys]);
 
   const taskProgressByArea = useMemo(() => {
     return TASK_CATEGORIES.map((cat) => {
@@ -87,27 +113,40 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   }, [scopedTasks]);
 
   const partnerSettlement = useMemo(() => {
-    const tiago = scopedPayments
-      .filter((p) => p.paidBy === 'Tiago')
-      .reduce((s, p) => s + p.amount, 0);
-    const leticia = scopedPayments
-      .filter((p) => p.paidBy === 'Letícia')
-      .reduce((s, p) => s + p.amount, 0);
+    const total = scopedPayments.reduce((s, p) => s + p.amount, 0);
+    const partnerRows = activePartnerNames.map((name) => ({
+      name,
+      paid: scopedPayments
+        .filter((p) => p.paidBy === name)
+        .reduce((s, p) => s + p.amount, 0),
+    }));
+    const partnerPool = partnerRows.reduce((s, r) => s + r.paid, 0);
+    const idealEach = partnerRows.length > 0 ? partnerPool / partnerRows.length : 0;
+
+    const enrichedPartners = partnerRows.map((r) => ({
+      ...r,
+      balance: r.paid - idealEach,
+    }));
+
     const empresa = scopedPayments
       .filter((p) => p.paidBy === 'Empresa Creps Urca')
       .reduce((s, p) => s + p.amount, 0);
-    const partnerPool = tiago + leticia;
-    const idealEach = partnerPool / 2;
+
+    const others = scopedPayments
+      .filter(
+        (p) =>
+          p.paidBy !== 'Empresa Creps Urca' &&
+          !activePartnerNames.includes(p.paidBy)
+      )
+      .reduce((s, p) => s + p.amount, 0);
+
     return {
-      total: tiago + leticia + empresa,
-      tiago,
-      leticia,
+      total,
+      enrichedPartners,
       empresa,
-      idealEach,
-      tiagoBalance: tiago - idealEach,
-      leticiaBalance: leticia - idealEach,
+      others,
     };
-  }, [scopedPayments]);
+  }, [scopedPayments, activePartnerNames]);
 
   const monthLabel = selectedMonth === 'all' ? 'Consolidado Geral' : `Mês ${selectedMonth}`;
 
@@ -115,7 +154,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     exportToExcel({
       tasks: scopedTasks,
       payments: scopedPayments,
-      auditLogs: isMaster ? auditLogs : undefined,
+      auditLogs: isFullAdmin ? auditLogs : undefined,
       monthLabel,
     });
   };
@@ -185,7 +224,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
       {/* Partner Equalization Box */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">
             Acerto de Contas entre Sócios ({monthLabel})
           </h3>
@@ -194,32 +233,28 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
-            <p className="text-xs text-slate-500 dark:text-slate-400">Desembolso Tiago</p>
-            <p className="font-mono tabular-nums text-lg font-bold text-slate-900 dark:text-slate-100 mt-1">
-              {formatCurrencyBRL(partnerSettlement.tiago)}
-            </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono tabular-nums">
-              Saldo 50/50:{' '}
-              {partnerSettlement.tiagoBalance >= 0
-                ? `+${formatCurrencyBRL(partnerSettlement.tiagoBalance)} a receber`
-                : `${formatCurrencyBRL(partnerSettlement.tiagoBalance)} a compensar`}
-            </p>
-          </div>
-
-          <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
-            <p className="text-xs text-slate-500 dark:text-slate-400">Desembolso Letícia</p>
-            <p className="font-mono tabular-nums text-lg font-bold text-slate-900 dark:text-slate-100 mt-1">
-              {formatCurrencyBRL(partnerSettlement.leticia)}
-            </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono tabular-nums">
-              Saldo 50/50:{' '}
-              {partnerSettlement.leticiaBalance >= 0
-                ? `+${formatCurrencyBRL(partnerSettlement.leticiaBalance)} a receber`
-                : `${formatCurrencyBRL(partnerSettlement.leticiaBalance)} a compensar`}
-            </p>
-          </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {partnerSettlement.enrichedPartners.map((partner) => (
+            <div
+              key={partner.name}
+              className="p-4 rounded-lg bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800"
+            >
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Desembolso {partner.name}
+              </p>
+              <p className="font-mono tabular-nums text-lg font-bold text-slate-900 dark:text-slate-100 mt-1">
+                {formatCurrencyBRL(partner.paid)}
+              </p>
+              {partnerSettlement.enrichedPartners.length >= 2 && (
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono tabular-nums">
+                  Rateio igual:{' '}
+                  {partner.balance >= 0
+                    ? `+${formatCurrencyBRL(partner.balance)} a receber`
+                    : `${formatCurrencyBRL(partner.balance)} a compensar`}
+                </p>
+              )}
+            </div>
+          ))}
 
           <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
             <p className="text-xs text-slate-500 dark:text-slate-400">Conta Creps Urca</p>
@@ -230,6 +265,18 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               Pagamentos diretos pela PJ
             </p>
           </div>
+
+          {partnerSettlement.others > 0 && (
+            <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
+              <p className="text-xs text-slate-500 dark:text-slate-400">Outros Pagadores</p>
+              <p className="font-mono tabular-nums text-lg font-bold text-slate-900 dark:text-slate-100 mt-1">
+                {formatCurrencyBRL(partnerSettlement.others)}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Lançamentos de outros responsáveis
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -244,7 +291,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               Evolução Mensal por Pagador (Incluído no PDF)
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Comparativo mensal entre Tiago, Letícia e conta Creps Urca
+              Comparativo mensal entre os sócios cadastrados e conta Creps Urca
             </p>
           </div>
 
@@ -273,9 +320,18 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                     }}
                   />
                   <Legend wrapperStyle={{ fontSize: '12px' }} />
-                  <Bar dataKey="Tiago" stackId="a" fill="#0f766e" radius={[0, 0, 0, 0]} />
-                  <Bar dataKey="Leticia" name="Letícia" stackId="a" fill="#0284c7" />
-                  <Bar dataKey="Empresa" name="Creps Urca" stackId="a" fill="#475569" radius={[4, 4, 0, 0]} />
+                  {chartSeriesKeys.map((key, idx) => (
+                    <Bar
+                      key={key}
+                      dataKey={key}
+                      name={key}
+                      stackId="a"
+                      fill={SERIES_COLORS[idx % SERIES_COLORS.length]}
+                      radius={
+                        idx === chartSeriesKeys.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]
+                      }
+                    />
+                  ))}
                 </BarChart>
               </ResponsiveContainer>
             </div>

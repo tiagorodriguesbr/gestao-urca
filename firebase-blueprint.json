@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Perfis de acesso e permissões (Administrador Master ou Gerente de Loja) da Creps Urca.",
+      "description": "Perfis de acesso e permissões granulares (Sócio, Diretor ou Gerente) da Creps Urca.",
       "type": "object",
       "properties": {
         "uid": {
@@ -27,8 +27,16 @@
         },
         "role": {
           "type": "string",
-          "enum": ["master", "manager"],
-          "description": "Nível de permissão: master (Sócios) ou manager (Gerente de Loja somente leitura)."
+          "enum": ["socio", "diretor", "gerente", "master", "manager"],
+          "description": "Nível de permissão: socio, diretor (acesso total) ou gerente (abas e edições configuráveis)."
+        },
+        "allowedTabs": {
+          "type": "array",
+          "description": "Lista de abas visíveis para o usuário (aplicada a Gerente)."
+        },
+        "editableTabs": {
+          "type": "array",
+          "description": "Lista de abas em que o Gerente possui permissão de alteração."
         },
         "active": {
           "type": "boolean",
@@ -39,7 +47,7 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$",
-          "description": "UID do Administrador Master que criou o acesso."
+          "description": "UID do Sócio ou Diretor que criou o acesso."
         },
         "createdAt": {
           "type": "string",
@@ -57,11 +65,51 @@
         "email",
         "displayName",
         "role",
+        "allowedTabs",
+        "editableTabs",
         "active",
         "createdByUid",
         "createdAt",
         "updatedAt"
       ]
+    },
+    "PartnerRecord": {
+      "title": "PartnerRecord",
+      "description": "Registro não-sensível dos Sócios cadastrados para seleção em Aporte por Sócios e Pagamentos.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "enum": ["creps-urca"],
+          "description": "Identificador do workspace da loja."
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID do Sócio."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Nome do Sócio."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Indica se o Sócio está ativo."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "uid", "displayName", "active", "createdAt", "updatedAt"]
     },
     "TransitionTask": {
       "title": "TransitionTask",
@@ -139,13 +187,11 @@
         },
         "createdAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Timestamp do servidor na criação."
+          "format": "date-time"
         },
         "updatedAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Timestamp do servidor na atualização."
+          "format": "date-time"
         }
       },
       "required": [
@@ -166,28 +212,26 @@
     },
     "TransitionPayment": {
       "title": "TransitionPayment",
-      "description": "Pagamento pré-operacional ou de normalização da Creps Urca realizado pelos sócios.",
+      "description": "Pagamento pré-operacional ou de normalização da Creps Urca.",
       "type": "object",
       "properties": {
         "workspaceId": {
           "type": "string",
-          "enum": ["creps-urca"],
-          "description": "Identificador do workspace da loja."
+          "enum": ["creps-urca"]
         },
         "description": {
           "type": "string",
           "minLength": 2,
-          "maxLength": 160,
-          "description": "Descrição do pagamento ou despesa."
+          "maxLength": 160
         },
         "amount": {
-          "type": "number",
-          "description": "Valor em reais (BRL)."
+          "type": "number"
         },
         "paidBy": {
           "type": "string",
-          "enum": ["Tiago", "Letícia", "Empresa Creps Urca"],
-          "description": "Responsável financeiro pelo desembolso."
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Nome do Sócio ou conta pagadora."
         },
         "category": {
           "type": "string",
@@ -199,64 +243,48 @@
             "Reforma & Estrutura",
             "Serviços & Sistemas",
             "Outros"
-          ],
-          "description": "Categoria financeira."
+          ]
         },
         "paymentMethod": {
           "type": "string",
-          "enum": [
-            "PIX",
-            "Cartão Corporativo",
-            "Transferência",
-            "Boleto",
-            "Dinheiro"
-          ],
-          "description": "Meio de pagamento utilizado."
+          "enum": ["PIX", "Cartão Corporativo", "Transferência", "Boleto", "Dinheiro"]
         },
         "paymentDate": {
           "type": "string",
           "minLength": 10,
           "maxLength": 10,
-          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-          "description": "Data do pagamento (YYYY-MM-DD)."
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
         },
         "status": {
           "type": "string",
-          "enum": ["pago", "agendado"],
-          "description": "Situação do pagamento."
+          "enum": ["pago", "agendado"]
         },
         "receiptRef": {
           "type": "string",
-          "maxLength": 120,
-          "description": "Número da NF, comprovante ou referência."
+          "maxLength": 120
         },
         "notes": {
           "type": "string",
-          "maxLength": 600,
-          "description": "Observações adicionais sobre o gasto."
+          "maxLength": 600
         },
         "createdByUid": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$",
-          "description": "UID do usuário que lançou o pagamento."
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "createdByName": {
           "type": "string",
           "minLength": 2,
-          "maxLength": 80,
-          "description": "Nome do usuário que lançou o pagamento."
+          "maxLength": 80
         },
         "createdAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Timestamp do servidor na criação."
+          "format": "date-time"
         },
         "updatedAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Timestamp do servidor na atualização."
+          "format": "date-time"
         }
       },
       "required": [
@@ -276,6 +304,126 @@
         "updatedAt"
       ]
     },
+    "InventoryMeta": {
+      "title": "InventoryMeta",
+      "description": "Datas manuais de referência para Quantidade Base e Quantidade Hoje do inventário.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "enum": ["creps-urca"]
+        },
+        "baseDate": {
+          "type": "string",
+          "maxLength": 10,
+          "description": "Data manual da contagem base (YYYY-MM-DD ou vazio)."
+        },
+        "currentDate": {
+          "type": "string",
+          "maxLength": 10,
+          "description": "Data manual da contagem hoje (YYYY-MM-DD ou vazio)."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedByName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "baseDate",
+        "currentDate",
+        "updatedByUid",
+        "updatedByName",
+        "updatedAt"
+      ]
+    },
+    "InventoryItem": {
+      "title": "InventoryItem",
+      "description": "Ingrediente ou item de embalagem do inventário com quantidade base e quantidade hoje.",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "enum": ["creps-urca"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "Proteínas",
+            "Queijos",
+            "Estoque Seco",
+            "Hortifruti",
+            "Doces",
+            "Embalagem",
+            "Outros Congelados e Resfriados",
+            "Molhos",
+            "Basicos Delivery",
+            "Polpas e Açaí"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20
+        },
+        "baseQty": {
+          "type": "number"
+        },
+        "currentQty": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "sortOrder": {
+          "type": "number"
+        },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "name",
+        "category",
+        "unit",
+        "baseQty",
+        "currentQty",
+        "notes",
+        "sortOrder",
+        "createdByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
     "AuditLog": {
       "title": "AuditLog",
       "description": "Registro imutável de auditoria para todas as alterações no banco de dados.",
@@ -283,68 +431,56 @@
       "properties": {
         "workspaceId": {
           "type": "string",
-          "enum": ["creps-urca"],
-          "description": "Identificador do workspace da loja."
+          "enum": ["creps-urca"]
         },
         "entityType": {
           "type": "string",
-          "enum": ["task", "payment", "user", "system"],
-          "description": "Coleção afetada."
+          "enum": ["task", "payment", "user", "inventory", "partner", "system"]
         },
         "entityId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$",
-          "description": "ID do documento afetado."
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "action": {
           "type": "string",
-          "enum": ["create", "update", "delete"],
-          "description": "Tipo de operação executada."
+          "enum": ["create", "update", "delete"]
         },
         "summary": {
           "type": "string",
           "minLength": 2,
-          "maxLength": 300,
-          "description": "Resumo legível da alteração."
+          "maxLength": 300
         },
         "actorUid": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$",
-          "description": "UID do usuário que executou a ação."
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "actorEmail": {
           "type": "string",
           "minLength": 5,
-          "maxLength": 150,
-          "description": "E-mail do usuário executor."
+          "maxLength": 150
         },
         "actorName": {
           "type": "string",
           "minLength": 2,
-          "maxLength": 80,
-          "description": "Nome do usuário executor."
+          "maxLength": 80
         },
         "changedFields": {
-          "type": "array",
-          "description": "Lista limitada dos campos alterados."
+          "type": "array"
         },
         "amount": {
-          "type": "number",
-          "description": "Valor financeiro envolvido na transação (0 se não aplicável)."
+          "type": "number"
         },
         "source": {
           "type": "string",
-          "enum": ["client_atomic_batch", "cloud_function_trigger"],
-          "description": "Origem do registro de auditoria."
+          "enum": ["client_atomic_batch", "cloud_function_trigger"]
         },
         "timestamp": {
           "type": "string",
-          "format": "date-time",
-          "description": "Timestamp do servidor na criação do log."
+          "format": "date-time"
         }
       },
       "required": [
@@ -366,7 +502,11 @@
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
-      "description": "Perfis de acesso e papéis RBAC da equipe Creps Urca."
+      "description": "Perfis de acesso e permissões (Sócio, Diretor, Gerente) da Creps Urca."
+    },
+    "/partners/{partnerId}": {
+      "schema": { "$ref": "#/entities/PartnerRecord" },
+      "description": "Lista não-sensível de Sócios cadastrados para exibição e filtro em Aporte por Sócios."
     },
     "/tasks/{taskId}": {
       "schema": { "$ref": "#/entities/TransitionTask" },
@@ -375,6 +515,14 @@
     "/payments/{paymentId}": {
       "schema": { "$ref": "#/entities/TransitionPayment" },
       "description": "Pagamentos e custos pré-operacionais realizados pelos sócios."
+    },
+    "/inventory_meta/{metaId}": {
+      "schema": { "$ref": "#/entities/InventoryMeta" },
+      "description": "Datas manuais de contagem Base e Hoje do inventário."
+    },
+    "/inventory_items/{itemId}": {
+      "schema": { "$ref": "#/entities/InventoryItem" },
+      "description": "Itens e quantidades do inventário de ingredientes da Creps Urca."
     },
     "/audit_logs/{logId}": {
       "schema": { "$ref": "#/entities/AuditLog" },

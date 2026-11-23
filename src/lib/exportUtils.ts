@@ -6,6 +6,8 @@ import {
   formatDateBR,
   getTodayIsoDate,
   type AuditLog,
+  type InventoryItem,
+  type InventoryMeta,
   type TransitionPayment,
   type TransitionTask,
 } from '../types/domain';
@@ -33,15 +35,10 @@ export function exportToExcel(params: {
   const { tasks, payments, auditLogs, monthLabel } = params;
 
   const totalSpent = payments.reduce((acc, p) => acc + p.amount, 0);
-  const tiagoTotal = payments
-    .filter((p) => p.paidBy === 'Tiago')
-    .reduce((acc, p) => acc + p.amount, 0);
-  const leticiaTotal = payments
-    .filter((p) => p.paidBy === 'Letícia')
-    .reduce((acc, p) => acc + p.amount, 0);
-  const companyTotal = payments
-    .filter((p) => p.paidBy === 'Empresa Creps Urca')
-    .reduce((acc, p) => acc + p.amount, 0);
+  const payerTotals = new Map<string, number>();
+  for (const p of payments) {
+    payerTotals.set(p.paidBy, (payerTotals.get(p.paidBy) || 0) + p.amount);
+  }
 
   const completedTasks = tasks.filter((t) => t.status === 'concluido').length;
   const urgentTasks = tasks.filter((t) => isUrgentTask(t)).length;
@@ -53,9 +50,10 @@ export function exportToExcel(params: {
     { Indicador: 'Data de Exportação', Valor: formatDateBR(getTodayIsoDate()) },
     { Indicador: 'Total de Pagamentos Lançados', Valor: payments.length },
     { Indicador: 'Total Gasto (BRL)', Valor: totalSpent },
-    { Indicador: 'Desembolso Tiago (BRL)', Valor: tiagoTotal },
-    { Indicador: 'Desembolso Letícia (BRL)', Valor: leticiaTotal },
-    { Indicador: 'Desembolso Conta Empresa (BRL)', Valor: companyTotal },
+    ...Array.from(payerTotals.entries()).map(([payer, val]) => ({
+      Indicador: `Desembolso ${payer} (BRL)`,
+      Valor: val,
+    })),
     { Indicador: 'Atividades Totais', Valor: tasks.length },
     { Indicador: 'Atividades Concluídas', Valor: completedTasks },
     { Indicador: 'Progresso da Transição (%)', Valor: `${completionPct}%` },
@@ -177,11 +175,10 @@ export async function exportMonthlyPdf(params: {
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
 
   const totalSpent = payments.reduce((acc, p) => acc + p.amount, 0);
-  const tiagoTotal = payments.filter((p) => p.paidBy === 'Tiago').reduce((acc, p) => acc + p.amount, 0);
-  const leticiaTotal = payments.filter((p) => p.paidBy === 'Letícia').reduce((acc, p) => acc + p.amount, 0);
-  const companyTotal = payments
-    .filter((p) => p.paidBy === 'Empresa Creps Urca')
-    .reduce((acc, p) => acc + p.amount, 0);
+  const payerMap = new Map<string, number>();
+  for (const p of payments) {
+    payerMap.set(p.paidBy, (payerMap.get(p.paidBy) || 0) + p.amount);
+  }
 
   const completedTasks = tasks.filter((t) => t.status === 'concluido').length;
   const progressPct = tasks.length > 0 ? Math.round((completedTasks / tasks.length) * 100) : 0;
@@ -203,16 +200,19 @@ export async function exportMonthlyPdf(params: {
   pdf.setFontSize(12);
   pdf.text('1. Resumo Executivo da Transição', 14, 38);
 
+  const summaryBody: Array<[string, string]> = [
+    ['Total Investido / Pago até Aqui', formatCurrencyBRL(totalSpent)],
+    ...Array.from(payerMap.entries()).map(([payer, val]): [string, string] => [
+      `Desembolso · ${payer}`,
+      formatCurrencyBRL(val),
+    ]),
+    ['Progresso do Checklist de Transição', `${completedTasks} de ${tasks.length} atividades (${progressPct}%)`],
+  ];
+
   autoTable(pdf, {
     startY: 42,
     head: [['Indicador', 'Consolidado']],
-    body: [
-      ['Total Investido / Pago até Aqui', formatCurrencyBRL(totalSpent)],
-      ['Desembolso Sócio Tiago', formatCurrencyBRL(tiagoTotal)],
-      ['Desembolso Sócia Letícia', formatCurrencyBRL(leticiaTotal)],
-      ['Desembolso Conta Empresa Creps Urca', formatCurrencyBRL(companyTotal)],
-      ['Progresso do Checklist de Transição', `${completedTasks} de ${tasks.length} atividades (${progressPct}%)`],
-    ],
+    body: summaryBody,
     theme: 'grid',
     headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 9 },
     bodyStyles: { fontSize: 9, textColor: [30, 41, 59] },
@@ -299,4 +299,85 @@ export async function exportMonthlyPdf(params: {
   });
 
   pdf.save(`Creps_Urca_Relatorio_Mensal_${getTodayIsoDate()}.pdf`);
+}
+
+export function exportInventoryPdf(params: {
+  items: InventoryItem[];
+  meta: InventoryMeta | null;
+  categoryLabel: string;
+}) {
+  const { items, meta, categoryLabel } = params;
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+  const baseDateLabel = meta?.baseDate ? formatDateBR(meta.baseDate) : 'Não informada';
+  const currentDateLabel = meta?.currentDate ? formatDateBR(meta.currentDate) : 'Não informada';
+
+  pdf.setFillColor(15, 118, 110);
+  pdf.rect(0, 0, 210, 30, 'F');
+  pdf.setTextColor(255, 255, 255);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(16);
+  pdf.text('CREPS URCA — Inventário de Estoque e Ingredientes', 14, 13);
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(9.5);
+  pdf.text(
+    `Data Base: ${baseDateLabel}  ·  Data Hoje: ${currentDateLabel}  ·  Filtro: ${categoryLabel}`,
+    14,
+    22
+  );
+
+  const countedCount = items.filter((i) => i.baseQty > 0 || i.currentQty > 0).length;
+  const changedCount = items.filter((i) => i.baseQty !== i.currentQty).length;
+
+  pdf.setTextColor(15, 23, 42);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(10.5);
+  pdf.text(
+    `Resumo: ${items.length} itens listados  ·  ${countedCount} com contagem preenchida  ·  ${changedCount} com variação`,
+    14,
+    38
+  );
+
+  const fmtQty = (n: number) =>
+    new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 }).format(n);
+
+  autoTable(pdf, {
+    startY: 43,
+    head: [
+      [
+        'Categoria',
+        'Ingrediente / Item',
+        'Unid.',
+        `Qtd. Base\n(${baseDateLabel})`,
+        `Qtd. Hoje\n(${currentDateLabel})`,
+        'Variação',
+      ],
+    ],
+    body:
+      items.length > 0
+        ? items.map((item) => {
+            const diff = Math.round((item.currentQty - item.baseQty) * 1000) / 1000;
+            const diffStr = diff > 0 ? `+${fmtQty(diff)}` : fmtQty(diff);
+            return [
+              item.category,
+              item.name,
+              item.unit,
+              fmtQty(item.baseQty),
+              fmtQty(item.currentQty),
+              diffStr,
+            ];
+          })
+        : [['—', 'Nenhum item no inventário', '—', '0', '0', '0']],
+    theme: 'striped',
+    headStyles: { fillColor: [15, 23, 42], textColor: 255, fontSize: 8.5 },
+    bodyStyles: { fontSize: 8, textColor: [30, 41, 59] },
+    columnStyles: {
+      2: { halign: 'center' },
+      3: { halign: 'right', fontStyle: 'bold' },
+      4: { halign: 'right', fontStyle: 'bold' },
+      5: { halign: 'right' },
+    },
+  });
+
+  pdf.save(`Creps_Urca_Inventario_${getTodayIsoDate()}.pdf`);
 }
