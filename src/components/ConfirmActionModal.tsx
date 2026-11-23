@@ -14,12 +14,16 @@ export interface ConfirmDialogState {
 interface ConfirmActionModalProps {
   dialog: ConfirmDialogState | null;
   busy: boolean;
+  error: string | null;
+  onConfirm: () => void;
   onClose: () => void;
 }
 
 export const ConfirmActionModal: React.FC<ConfirmActionModalProps> = ({
   dialog,
   busy,
+  error,
+  onConfirm,
   onClose,
 }) => {
   if (!dialog || !dialog.open) return null;
@@ -92,6 +96,15 @@ export const ConfirmActionModal: React.FC<ConfirmActionModalProps> = ({
               ))}
             </dl>
           )}
+
+          {error && (
+            <p
+              role="alert"
+              className="p-3 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-xs text-red-700 dark:text-red-300"
+            >
+              {error}
+            </p>
+          )}
         </div>
 
         <div className="flex items-center justify-end gap-3 px-6 py-4 bg-slate-50 dark:bg-slate-950/50 border-t border-slate-200 dark:border-slate-800">
@@ -106,7 +119,7 @@ export const ConfirmActionModal: React.FC<ConfirmActionModalProps> = ({
           <button
             type="button"
             disabled={busy}
-            onClick={() => void dialog.onConfirm()}
+            onClick={onConfirm}
             className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium text-white transition-colors whitespace-nowrap shrink-0 disabled:opacity-60 ${
               isDanger
                 ? 'bg-red-600 hover:bg-red-700'

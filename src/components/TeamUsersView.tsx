@@ -20,7 +20,10 @@ import {
   type UserProfile,
   type UserRole,
 } from '../types/domain';
-import { provisionAuthUserViaSecondaryApp } from '../lib/firebase';
+import {
+  getFirestoreErrorMessage,
+  provisionAuthUserViaSecondaryApp,
+} from '../lib/firebase';
 import firebaseConfig from '../../firebase-applet-config.json';
 import type { ConfirmDialogState } from './ConfirmActionModal';
 
@@ -221,15 +224,20 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
       tone: 'primary',
       onConfirm: async () => {
         try {
-          const uid = await provisionAuthUserViaSecondaryApp(cleanEmail, password, cleanName);
-          await onRegisterUserProfile({
-            uid,
-            email: cleanEmail,
-            displayName: cleanName,
-            role,
-            allowedTabs: finalAllowed,
-            editableTabs: finalEditable,
-          });
+          await provisionAuthUserViaSecondaryApp(
+            cleanEmail,
+            password,
+            cleanName,
+            (uid) =>
+              onRegisterUserProfile({
+                uid,
+                email: cleanEmail,
+                displayName: cleanName,
+                role,
+                allowedTabs: finalAllowed,
+                editableTabs: finalEditable,
+              })
+          );
           setCreateOpen(false);
         } catch (err: unknown) {
           const code = (err as { code?: string })?.code || '';
@@ -244,7 +252,7 @@ export const TeamUsersView: React.FC<TeamUsersViewProps> = ({
             setFormError('Senha muito fraca. Utilize pelo menos 6 caracteres.');
           } else {
             setFormError(
-              err instanceof Error ? err.message : 'Erro ao criar usuário no Firebase Auth.'
+              getFirestoreErrorMessage(err) || 'Erro ao criar usuário no Firebase Auth.'
             );
           }
           throw err;

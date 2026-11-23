@@ -513,6 +513,14 @@ export async function updateUserProfileWithAudit(
     updates.role === 'gerente'
       ? updates.editableTabs.filter((t) => allowedTabs.includes(t))
       : [...GERENTE_EDITABLE_TABS];
+  let partnerExists = false;
+  if (updates.role === 'socio') {
+    try {
+      partnerExists = (await getDoc(partnerRef)).exists();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, `partners/${target.uid}`);
+    }
+  }
 
   const changedFields: string[] = [];
   if (target.displayName !== displayName) changedFields.push('displayName');
@@ -530,18 +538,22 @@ export async function updateUserProfileWithAudit(
   });
 
   if (updates.role === 'socio') {
-    batch.set(
-      partnerRef,
-      {
+    if (partnerExists) {
+      batch.update(partnerRef, {
+        displayName,
+        active: updates.active,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      batch.set(partnerRef, {
         workspaceId: WORKSPACE_ID,
         uid: target.uid,
         displayName,
         active: updates.active,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      },
-      { merge: false }
-    );
+      });
+    }
   } else {
     batch.delete(partnerRef);
   }
@@ -616,8 +628,13 @@ export async function createInventoryPeriodWithItemsAndAudit(
 
   const periodId = `${WORKSPACE_ID}_${input.monthKey}`;
   const periodRef = doc(db, 'inventory_periods', periodId);
-  const existingSnap = await getDoc(periodRef);
-  if (existingSnap.exists()) {
+  let periodAlreadyExists: boolean;
+  try {
+    periodAlreadyExists = (await getDoc(periodRef)).exists();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `inventory_periods/${periodId}`);
+  }
+  if (periodAlreadyExists) {
     throw new Error(`O inventário de ${formatMonthKeyBR(input.monthKey)} já foi iniciado.`);
   }
 
@@ -720,7 +737,11 @@ export async function createInventoryPeriodWithItemsAndAudit(
     try {
       await batch.commit();
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `inventory_periods/${periodId}`);
+      handleFirestoreError(
+        error,
+        OperationType.WRITE,
+        `inventory_periods/${periodId}, inventory_items, audit_logs`
+      );
     }
   }
 

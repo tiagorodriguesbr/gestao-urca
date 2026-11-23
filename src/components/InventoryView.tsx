@@ -33,6 +33,7 @@ import {
   type InventoryItem,
   type InventoryPeriod,
 } from '../types/domain';
+import { getFirestoreErrorMessage } from '../lib/firebase';
 import { exportInventoryPdf } from '../lib/exportUtils';
 import type { ConfirmDialogState } from './ConfirmActionModal';
 
@@ -408,9 +409,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
           : `Inventário de ${formatMonthKeyBR(newMonthKey)} criado com 114 itens prontos para contagem.`
       );
     } catch (err: unknown) {
-      setNewMonthError(
-        err instanceof Error ? err.message : 'Não foi possível criar o inventário do mês.'
-      );
+      setNewMonthError(getFirestoreErrorMessage(err));
     } finally {
       setNewMonthBusy(false);
     }

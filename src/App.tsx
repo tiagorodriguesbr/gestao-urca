@@ -13,6 +13,7 @@ import {
   doc,
   limit,
   onSnapshot,
+  orderBy,
   query,
   where,
 } from 'firebase/firestore';
@@ -35,7 +36,13 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
+import {
+  auth,
+  db,
+  getFirestoreErrorMessage,
+  handleFirestoreError,
+  OperationType,
+} from './lib/firebase';
 import {
   createInventoryItemWithAudit,
   createInventoryPeriodWithItemsAndAudit,
@@ -102,6 +109,25 @@ type AppTab =
   | 'reports'
   | 'audit'
   | 'team';
+
+type FirestoreListenerKey =
+  | 'tasks'
+  | 'payments'
+  | 'partners'
+  | 'inventoryPeriods'
+  | 'inventoryItems'
+  | 'audit'
+  | 'users';
+
+const FIRESTORE_LISTENER_LABELS: Record<FirestoreListenerKey, string> = {
+  tasks: 'Checklist',
+  payments: 'Pagamentos',
+  partners: 'Sócios',
+  inventoryPeriods: 'Períodos de inventário',
+  inventoryItems: 'Itens de inventário',
+  audit: 'Auditoria',
+  users: 'Equipe',
+};
 
 const TAB_TITLES: Record<AppTab, string> = {
   dashboard: 'Visão Geral',
@@ -184,6 +210,10 @@ function MainShell() {
 
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [firestoreLoadErrors, setFirestoreLoadErrors] = useState<
+    Partial<Record<FirestoreListenerKey, string>>
+  >({});
 
   const [triggerCreateTask, setTriggerCreateTask] = useState(false);
   const [triggerCreatePayment, setTriggerCreatePayment] = useState(false);
@@ -205,6 +235,29 @@ function MainShell() {
       if (sendPush) {
         sendBrowserPushNotification(item.title, item.message, alertObj.id);
       }
+    },
+    []
+  );
+
+  const clearListenerError = useCallback((key: FirestoreListenerKey) => {
+    setFirestoreLoadErrors((previous) => {
+      if (!(key in previous)) return previous;
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const reportListenerError = useCallback(
+    (key: FirestoreListenerKey, error: unknown, path: string) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error('Firestore listener failed', JSON.stringify({ path, error: detail }));
+      setFirestoreLoadErrors((previous) => ({
+        ...previous,
+        [key]: detail.toLowerCase().includes('permission')
+          ? 'A leitura foi negada pelo Firestore. Confira o perfil do usuário e as regras publicadas.'
+          : `Não foi possível carregar os dados (${path}): ${detail}`,
+      }));
     },
     []
   );
@@ -331,10 +384,10 @@ function MainShell() {
   const canEditTab = useCallback(
     (tab: GerenteEditableTab): boolean => {
       if (isFullAdmin) return true;
-      if (normalizedRole !== 'gerente') return false;
+      if (userProfile?.role !== 'gerente') return false;
       return Boolean(userProfile?.editableTabs?.includes(tab));
     },
-    [isFullAdmin, normalizedRole, userProfile?.editableTabs]
+    [isFullAdmin, userProfile?.editableTabs, userProfile?.role]
   );
 
   // Redirect away from disallowed tabs if permissions change live
@@ -356,10 +409,12 @@ function MainShell() {
       setInventoryItems([]);
       setAuditLogs([]);
       setTeamUsers([]);
+      setFirestoreLoadErrors({});
       return;
     }
 
     setTasksLoading(true);
+    clearListenerError('tasks');
     const tasksQuery = query(
       collection(db, 'tasks'),
       where('workspaceId', '==', WORKSPACE_ID)
@@ -375,6 +430,7 @@ function MainShell() {
         }));
         setTasks(list);
         setTasksLoading(false);
+        clearListenerError('tasks');
 
         if (!tasksInitializedRef.current) {
           tasksInitializedRef.current = true;
@@ -406,10 +462,15 @@ function MainShell() {
           });
         }
       },
-      (error) => handleFirestoreError(error, OperationType.LIST, 'tasks')
+      (error) => {
+        setTasksLoading(false);
+        setTasks([]);
+        reportListenerError('tasks', error, 'tasks');
+      }
     );
 
     setPaymentsLoading(true);
+    clearListenerError('payments');
     const paymentsQuery = query(
       collection(db, 'payments'),
       where('workspaceId', '==', WORKSPACE_ID)
@@ -425,6 +486,7 @@ function MainShell() {
         }));
         setPayments(list);
         setPaymentsLoading(false);
+        clearListenerError('payments');
 
         if (!paymentsInitializedRef.current) {
           paymentsInitializedRef.current = true;
@@ -453,9 +515,14 @@ function MainShell() {
           });
         }
       },
-      (error) => handleFirestoreError(error, OperationType.LIST, 'payments')
+      (error) => {
+        setPaymentsLoading(false);
+        setPayments([]);
+        reportListenerError('payments', error, 'payments');
+      }
     );
 
+    clearListenerError('partners');
     const partnersQuery = query(
       collection(db, 'partners'),
       where('workspaceId', '==', WORKSPACE_ID)
@@ -468,10 +535,15 @@ function MainShell() {
           ...(d.data() as Omit<PartnerRecord, 'id'>),
         }));
         setPartners(list);
+        clearListenerError('partners');
       },
-      (error) => handleFirestoreError(error, OperationType.LIST, 'partners')
+      (error) => {
+        setPartners([]);
+        reportListenerError('partners', error, 'partners');
+      }
     );
 
+    clearListenerError('inventoryPeriods');
     const inventoryPeriodsQuery = query(
       collection(db, 'inventory_periods'),
       where('workspaceId', '==', WORKSPACE_ID)
@@ -486,6 +558,7 @@ function MainShell() {
           hasPendingWrites: d.metadata.hasPendingWrites,
         }));
         setInventoryPeriods(list);
+        clearListenerError('inventoryPeriods');
 
         if (!inventoryPeriodsInitializedRef.current) {
           inventoryPeriodsInitializedRef.current = true;
@@ -521,10 +594,14 @@ function MainShell() {
           });
         }
       },
-      (error) => handleFirestoreError(error, OperationType.LIST, 'inventory_periods')
+      (error) => {
+        setInventoryPeriods([]);
+        reportListenerError('inventoryPeriods', error, 'inventory_periods');
+      }
     );
 
     setInventoryLoading(true);
+    clearListenerError('inventoryItems');
     const inventoryQuery = query(
       collection(db, 'inventory_items'),
       where('workspaceId', '==', WORKSPACE_ID)
@@ -540,8 +617,13 @@ function MainShell() {
         }));
         setInventoryItems(list);
         setInventoryLoading(false);
+        clearListenerError('inventoryItems');
       },
-      (error) => handleFirestoreError(error, OperationType.LIST, 'inventory_items')
+      (error) => {
+        setInventoryLoading(false);
+        setInventoryItems([]);
+        reportListenerError('inventoryItems', error, 'inventory_items');
+      }
     );
 
     let unsubAudit: (() => void) | null = null;
@@ -549,9 +631,11 @@ function MainShell() {
 
     if (isFullAdmin) {
       setAuditLoading(true);
+      clearListenerError('audit');
       const auditQuery = query(
         collection(db, 'audit_logs'),
         where('workspaceId', '==', WORKSPACE_ID),
+        orderBy('timestamp', 'desc'),
         limit(120)
       );
       unsubAudit = onSnapshot(
@@ -575,11 +659,17 @@ function MainShell() {
             });
           setAuditLogs(list);
           setAuditLoading(false);
+          clearListenerError('audit');
         },
-        (error) => handleFirestoreError(error, OperationType.LIST, 'audit_logs')
+        (error) => {
+          setAuditLoading(false);
+          setAuditLogs([]);
+          reportListenerError('audit', error, 'audit_logs');
+        }
       );
 
       setUsersLoading(true);
+      clearListenerError('users');
       unsubUsers = onSnapshot(
         collection(db, 'users'),
         (snapshot) => {
@@ -589,14 +679,21 @@ function MainShell() {
           }));
           setTeamUsers(list);
           setUsersLoading(false);
+          clearListenerError('users');
         },
-        (error) => handleFirestoreError(error, OperationType.LIST, 'users')
+        (error) => {
+          setUsersLoading(false);
+          setTeamUsers([]);
+          reportListenerError('users', error, 'users');
+        }
       );
     } else {
       setAuditLogs([]);
       setTeamUsers([]);
       setAuditLoading(false);
       setUsersLoading(false);
+      clearListenerError('audit');
+      clearListenerError('users');
     }
 
     return () => {
@@ -608,7 +705,15 @@ function MainShell() {
       if (unsubAudit) unsubAudit();
       if (unsubUsers) unsubUsers();
     };
-  }, [authReady, firebaseUser, userProfile?.active, isFullAdmin, pushAlert]);
+  }, [
+    authReady,
+    firebaseUser,
+    userProfile?.active,
+    isFullAdmin,
+    pushAlert,
+    clearListenerError,
+    reportListenerError,
+  ]);
 
   const urgentTasksCount = useMemo(
     () => tasks.filter((t) => isUrgentTask(t)).length,
@@ -638,6 +743,7 @@ function MainShell() {
   );
 
   const requestConfirmation = useCallback((dialog: Omit<ConfirmDialogState, 'open'>) => {
+    setConfirmError(null);
     setConfirmDialog({ ...dialog, open: true });
   }, []);
 
@@ -647,8 +753,9 @@ function MainShell() {
     try {
       await confirmDialog.onConfirm();
       setConfirmDialog(null);
-    } catch {
-      // Keep error surfaced via child modal or ErrorBoundary
+      setConfirmError(null);
+    } catch (error) {
+      setConfirmError(getFirestoreErrorMessage(error));
     } finally {
       setConfirmBusy(false);
     }
@@ -1078,6 +1185,19 @@ function MainShell() {
 
         {/* Viewport Content */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+          {(
+            Object.keys(firestoreLoadErrors) as FirestoreListenerKey[]
+          ).map((key) => (
+            <div
+              key={key}
+              role="alert"
+              className="mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-sm text-amber-800 dark:text-amber-200"
+            >
+              <strong>{FIRESTORE_LISTENER_LABELS[key]}:</strong>{' '}
+              {firestoreLoadErrors[key]}
+            </div>
+          ))}
+
           {activeTab === 'dashboard' && canViewTab('dashboard') && (
             <DashboardView
               tasks={tasks}
@@ -1215,8 +1335,13 @@ function MainShell() {
       <ConfirmActionModal
         dialog={confirmDialog}
         busy={confirmBusy}
+        error={confirmError}
+        onConfirm={() => void handleConfirmExecute()}
         onClose={() => {
-          if (!confirmBusy) setConfirmDialog(null);
+          if (!confirmBusy) {
+            setConfirmDialog(null);
+            setConfirmError(null);
+          }
         }}
       />
 

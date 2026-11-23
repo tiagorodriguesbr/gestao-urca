@@ -1,6 +1,7 @@
 import { deleteApp, getApps, initializeApp } from 'firebase/app';
 import {
   createUserWithEmailAndPassword,
+  deleteUser,
   getAuth,
   sendEmailVerification,
   signOut,
@@ -64,6 +65,19 @@ export interface FirestoreErrorInfo {
   };
 }
 
+export function getFirestoreErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  try {
+    const info = JSON.parse(message) as Partial<FirestoreErrorInfo>;
+    if (typeof info.error === 'string') {
+      return `${info.error}${info.path ? ` (${info.operationType}: ${info.path})` : ''}`;
+    }
+  } catch {
+    return message;
+  }
+  return message;
+}
+
 export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
@@ -108,7 +122,8 @@ void testConnection();
 export async function provisionAuthUserViaSecondaryApp(
   email: string,
   password: string,
-  displayName: string
+  displayName: string,
+  createProfile: (uid: string) => Promise<void>
 ): Promise<string> {
   const secondaryName = `CrepsUrcaUserProvisioner_${Date.now()}`;
   const secondaryApp = initializeApp(firebaseConfig, secondaryName);
@@ -116,16 +131,37 @@ export async function provisionAuthUserViaSecondaryApp(
 
   try {
     const cred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
-    await updateProfile(cred.user, { displayName });
+    try {
+      await updateProfile(cred.user, { displayName });
+      await createProfile(cred.user.uid);
+    } catch (error) {
+      try {
+        await deleteUser(cred.user);
+      } catch (cleanupError) {
+        console.error('Failed to remove Auth user after profile creation failed', cleanupError);
+        throw new Error(
+          `O cadastro do perfil falhou e não foi possível remover a conta Auth ${cred.user.uid}.`
+        );
+      }
+      throw error;
+    }
+
     try {
       await sendEmailVerification(cred.user);
-    } catch {
-      // Non-blocking if email verification quota or provider setting defers sending
+    } catch (error) {
+      console.error('Failed to send verification email for new user', error);
     }
-    const createdUid = cred.user.uid;
-    await signOut(secondaryAuth);
-    return createdUid;
+    return cred.user.uid;
   } finally {
-    await deleteApp(secondaryApp).catch(() => {});
+    try {
+      await signOut(secondaryAuth);
+    } catch (error) {
+      console.error('Failed to sign out secondary Firebase Auth app', error);
+    }
+    try {
+      await deleteApp(secondaryApp);
+    } catch (error) {
+      console.error('Failed to dispose secondary Firebase App', error);
+    }
   }
 }
